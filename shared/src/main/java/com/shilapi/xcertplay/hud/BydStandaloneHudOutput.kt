@@ -46,7 +46,10 @@ internal class BydStandaloneHudOutput private constructor(context: Context) {   
 
         /** Enable production and diagnostic packages only on the physically tested firmware. */
         fun available(context: Context): Boolean {
-            if (Build.VERSION.SDK_INT < 28 || context.packageName !in setOf(
+            // A standalone guard: lint only treats a bare version check as a flow guard, and the
+            // signing APIs below are all API 28.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
+            if (context.packageName !in setOf(
                     "com.andrerinas.headunitrevived", "com.shihab.diplay",
                     "com.andrerinas.headunitrevived.bydhudtest", "com.shihab.diplay.hudtest")) return false
             if (Build.FINGERPRINT != "BYD-AUTO/IVI/IVI:13/TP1A.220624.014/eng.build20260722.221155:user/release-keys") return false

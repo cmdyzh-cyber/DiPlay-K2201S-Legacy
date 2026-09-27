@@ -82,6 +82,10 @@ class StandaloneHudDemoActivity : Activity() {
     }
 
     private fun validateTarget() {
+        // The signing APIs below are API 28; a bare guard is what lint understands.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            throw IllegalStateException("此测试需要 Android 9（API 28）或更高版本")
+        }
         check(packageName == "com.shihab.diplay.hudtest" && Process.myUid() >= 10000)
         check(Build.FINGERPRINT == "BYD-AUTO/IVI/IVI:13/TP1A.220624.014/eng.build20260722.221155:user/release-keys") {
             "此测试仅限已验证的固件"

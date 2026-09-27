@@ -549,9 +549,12 @@ class WifiP2pGroupManager(
         val wifi = appContext.getSystemService(WifiManager::class.java)
         val fiveGhzSupported = runCatching { wifi?.is5GHzBandSupported }.getOrNull()
         val wifiEnabled = runCatching { wifi?.isWifiEnabled }.getOrNull()
-        val locationEnabled = runCatching {
-            appContext.getSystemService(LocationManager::class.java)?.isLocationEnabled
-        }.getOrNull()
+        // LocationManager.isLocationEnabled is API 28; it is diagnostic only.
+        val locationEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching {
+                appContext.getSystemService(LocationManager::class.java)?.isLocationEnabled
+            }.getOrNull()
+        } else null
         val required = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
             else Manifest.permission.ACCESS_FINE_LOCATION
         val granted = appContext.checkSelfPermission(required) == PackageManager.PERMISSION_GRANTED
