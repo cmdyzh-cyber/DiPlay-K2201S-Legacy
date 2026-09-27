@@ -56,7 +56,7 @@ jobs:
           APK=$(ls mobile/build/outputs/apk/debug/*.apk | head -1)
           echo "APK: $APK"
           AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
-          "$AAPT2" dump badging "$APK" | grep -E "^package:|^sdkVersion:|^targetSdkVersion:|^application-label" || true
+          "$AAPT2" dump badging "$APK" | grep -E "^package:|^minSdkVersion:|^targetSdkVersion:|^application-label:" || true
           unzip -l "$APK" | grep -E "offline-mfi" || echo "offline-mfi assets: absent"
       - name: Test reports
         if: always()
