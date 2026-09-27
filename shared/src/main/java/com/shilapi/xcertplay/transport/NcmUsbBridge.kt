@@ -36,6 +36,7 @@ class NcmUsbBridge internal constructor(
     private var failure: IphoneUsbException? = null
     private var sequence = 0
     private var loggedWriteTimeout = false
+    private var padLogged = false
     private val frames = ArrayDeque<ByteArray>()
     private var queuedBytes = 0
     private var buffered = ByteArray(0)
@@ -180,11 +181,20 @@ class NcmUsbBridge internal constructor(
             }
             val blockLength = readU16(buffered, 8)
             if (blockLength < 28) throw failSession("Invalid NTB16 block length $blockLength")
+            if (bufferedSize < blockLength) return
             val padded = blockLength % USB_PACKET_SIZE == 0
-            val wireLength = blockLength + if (padded) 1 else 0
-            if (bufferedSize < wireLength) return
-            if (padded && buffered[blockLength].toInt() != 0) {
-                throw failSession("Invalid NTB16 short-packet pad")
+            // Apple terminates an NTB whose length is a whole number of USB packets with a single
+            // zero pad byte, so the transfer ends with a short packet instead of a ZLP. Android 7
+            // delivers that terminator as a ZLP instead, which readChunk() drops, so the byte
+            // after the block may be absent or may already be the next NTB header. Only consume a
+            // pad when one is actually present.
+            var wireLength = blockLength
+            if (padded && bufferedSize > blockLength && buffered[blockLength].toInt() == 0) {
+                wireLength = blockLength + 1
+            }
+            if (!padLogged && padded && wireLength == blockLength) {
+                padLogged = true
+                Log.i(TAG, "NTB16 block without the expected pad byte; accepting a ZLP terminator")
             }
             for (frame in Ntb16Codec.parse(buffered, 0, blockLength)) enqueueFrame(frame)
             val remaining = bufferedSize - wireLength
