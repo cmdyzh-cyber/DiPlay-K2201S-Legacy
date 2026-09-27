@@ -454,20 +454,33 @@ class WifiP2pGroupManager(
 
     /**
      * Android 7 through 9 never expose the group channel through a public API, and the iAP2
-     * accessory Wi-Fi configuration needs one. A cached scan result for the group's own SSID is
-     * exact when it is present; otherwise the station channel is the best available answer, because
-     * AOSP normally places the group owner on the station channel (the API 29+ aligned modes above
-     * rely on the same behaviour). 0 stays the last resort, which makes the iPhone scan instead.
+     * accessory Wi-Fi configuration needs one. Scanning for the group's own SSID is the only exact
+     * source; the station channel is the fallback because AOSP normally places the group owner on
+     * the station channel (the API 29+ aligned modes above rely on the same behaviour). 0 stays the
+     * last resort, which makes the iPhone scan instead.
      */
     private fun fallbackGroupFrequencyMHz(groupSsid: String?): Int {
-        val scanned = runCatching {
-            wifiManager?.scanResults
-                ?.firstOrNull { it.SSID == groupSsid && it.frequency > 0 }
-                ?.frequency
-        }.getOrNull()
-        if (scanned != null && wifiFrequencyMhzToChannel(scanned) != null) return scanned
+        val wifi = wifiManager ?: return 0
+        if (groupSsid != null) {
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GROUP_SCAN_BUDGET_MILLIS)
+            runCatching { @Suppress("DEPRECATION") wifi.startScan() }
+            while (true) {
+                val scanned = runCatching {
+                    wifi.scanResults
+                        ?.firstOrNull { it.SSID == groupSsid && it.frequency > 0 }
+                        ?.frequency
+                }.getOrNull()
+                if (scanned != null && wifiFrequencyMhzToChannel(scanned) != null) {
+                    diagnostic("Wi-Fi P2P group channel observed by scan channel=${wifiFrequencyMhzToChannel(scanned)}")
+                    return scanned
+                }
+                if (System.nanoTime() >= deadline) break
+                Thread.sleep(GROUP_SCAN_POLL_MILLIS)
+            }
+            diagnostic("Wi-Fi P2P group SSID not present in scan results; falling back")
+        }
         return runCatching {
-            wifiManager?.connectionInfo?.frequency?.takeIf { wifiFrequencyMhzToChannel(it) != null }
+            wifi.connectionInfo?.frequency?.takeIf { wifiFrequencyMhzToChannel(it) != null }
         }.getOrNull() ?: 0
     }
 
@@ -759,6 +772,10 @@ class WifiP2pGroupManager(
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val REMOVE_GROUP_TIMEOUT_MILLIS = 2_000L
         val REQUEST_POLL_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(500)
+
+        /** Bounded wait for a scan that can reveal the group channel below API 29. */
+        const val GROUP_SCAN_BUDGET_MILLIS = 1_200L
+        const val GROUP_SCAN_POLL_MILLIS = 150L
         const val TOKEN_ALPHABET =
             "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
     }
