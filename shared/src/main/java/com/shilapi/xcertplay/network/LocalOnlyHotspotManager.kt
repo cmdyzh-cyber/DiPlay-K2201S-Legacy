@@ -48,6 +48,9 @@ class LocalOnlyHotspotManager(context: Context) : WirelessHotspotManager {
      * interface. The returned credentials are not retained by this manager.
      */
     override fun start(timeoutMillis: Long): WirelessHotspotInfo {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            throw IOException("LocalOnlyHotspot requires Android 8 (API 26) or newer")
+        }
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "LocalOnlyHotspotManager.start must not run on the main thread"
         }

@@ -2,6 +2,28 @@
 
 Requirements: JDK 25, Android SDK 37, NDK 28.2.13676358 and the included Gradle wrapper.
 
+The APK declares `minSdk = 24` (Android 7.0). `mobile`, `common` and `shared` all use that floor;
+`automotive` stays at 29 because `androidx.car.app:app-automotive` requires it.
+
+## Android 7 (API 24/25) notes
+
+Android 7 and 7.1 are supported by degrading the features whose platform APIs do not exist there:
+
+- `LocalOnlyHotspot` starts at API 26, so wireless falls back to a legacy Wi-Fi Direct group.
+- `WifiP2pConfig.Builder` (API 29), `WifiP2pManager.createGroup(Channel, WifiP2pConfig, ActionListener)`
+  (API 29), `WifiP2pGroup.getFrequency()` (API 29) and `WifiP2pManager.Channel.close()` (API 27) are
+  all unavailable. The legacy `createGroup(Channel, ActionListener)` overload is used instead, the
+  platform chooses the group SSID and passphrase, and the operating channel is reported to the
+  iPhone as 0 (unknown), which makes the phone discover the AP by scanning. Because the channel is
+  never known, no working frequency is remembered for the next session.
+- `NotificationChannel`, the two-argument `Notification.Builder(Context, String)` and
+  `startForegroundService` are API 26; Android 7 posts the session notification on the channel-less
+  path and starts the service with `startService`.
+- `java.time` and `java.util.Base64` are API 26 APIs used by the pairing and location code. Core
+  library desugaring (`com.android.tools:desugar_jdk_libs`) supplies them on API 24/25.
+- `WifiP2pGroupManager` still needs the device to act as Wi-Fi Direct group owner; the wired USB
+  path is unaffected.
+
 ## Source and CI builds
 
 ```sh

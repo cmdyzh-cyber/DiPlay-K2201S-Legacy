@@ -1141,6 +1141,29 @@ class CarPlayHostActivity : ComponentActivity() {
             ).apply { topMargin = dp(12) },
         )
 
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            content.addView(
+                settingsCategoryHeader("Android 7 compatibility"),
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(40) },
+            )
+            content.addView(
+                menuText(
+                    "The following are unavailable on Android 7 (API 24/25):\n" +
+                        "• Wi-Fi Direct group channel — the iPhone finds the channel by scanning.\n" +
+                        "• LocalOnlyHotspot, 5 GHz frequency control and the HEVC software decoder.",
+                    16f,
+                    MENU_SECONDARY,
+                ),
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(12) },
+            )
+        }
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             content.addView(
                 settingsCategoryHeader("Android 9 compatibility"),
@@ -2115,8 +2138,14 @@ class CarPlayHostActivity : ComponentActivity() {
         val modes = buildList {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(WirelessHotspotMode.WIFI_P2P to "Wi-Fi P2P (5 GHz)")
+            } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                // LocalOnlyHotspot starts at API 26. Android 7/7.1 fall back to the legacy
+                // Wi-Fi Direct group, where the platform chooses the credentials and channel.
+                add(WirelessHotspotMode.WIFI_P2P to "Wi-Fi P2P")
             }
-            add(WirelessHotspotMode.LOCAL_ONLY_HOTSPOT to "LocalOnlyHotspot")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                add(WirelessHotspotMode.LOCAL_ONLY_HOTSPOT to "LocalOnlyHotspot")
+            }
             add(WirelessHotspotMode.MANUAL to "Manual hotspot")
         }
         var selectedId = View.NO_ID
@@ -2983,7 +3012,14 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         try {
-            startForegroundService(Intent(this, DiPlaySessionService::class.java))
+            val sessionService = Intent(this, DiPlaySessionService::class.java)
+            // startForegroundService is API 26. Android 7/7.1 starts the service directly and the
+            // service calls startForeground itself, so the foreground contract still holds.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(sessionService)
+            } else {
+                startService(sessionService)
+            }
             next.start()
         } catch (error: RuntimeException) {
             appendLog("Connection could not start: ${error.javaClass.simpleName}")

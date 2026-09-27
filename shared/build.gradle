@@ -6,7 +6,8 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 28
+        // Android 7.0 (API 24). The previous floor was 28; see docs/BUILD.md.
+        minSdk = 24
         targetSdk = 37
 
         ndk {
@@ -15,7 +16,7 @@ android {
 
         externalNativeBuild {
             ndkBuild {
-                arguments 'APP_PLATFORM=android-28'
+                arguments 'APP_PLATFORM=android-24'
             }
         }
 
@@ -30,9 +31,13 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        // java.time.Instant and java.util.Base64 are API 26 APIs used by the pairing and
+        // location code; desugaring supplies them on Android 7/7.1 (API 24/25).
+        coreLibraryDesugaringEnabled = true
     }
 }
 dependencies {
+    coreLibraryDesugaring libs.desugar.jdk.libs
     implementation libs.androidx.app
     implementation libs.bouncycastle
     implementation libs.jmdns

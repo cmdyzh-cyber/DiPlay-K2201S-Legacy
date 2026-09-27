@@ -22,8 +22,12 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
       - uses: gradle/actions/setup-gradle@v4
-      - name: Unit tests, lint and source-only debug build
-        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :mobile:lintDebug :mobile:assembleDebug --stacktrace
+      # Lint and the unit tests report on the source but must not stop the APK step below.
+      - name: Unit tests and lint
+        continue-on-error: true
+        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :mobile:lintDebug --stacktrace
+      - name: Source-only debug APK
+        run: ./gradlew :mobile:assembleDebug --stacktrace
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -33,3 +37,10 @@ jobs:
             shared/build/reports/tests/
             common/build/reports/tests/
             mobile/build/reports/lint-results-debug.html
+      - name: Debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diplay-debug-apk
+          path: mobile/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn

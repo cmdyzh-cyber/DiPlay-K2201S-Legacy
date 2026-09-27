@@ -1534,12 +1534,15 @@ class CarPlayController(
             type.equals("disable-bluetooth", ignoreCase = true)
 
     private fun startWirelessHotspot(generation: Int): WirelessHotspotInfo {
-        val hotspotMode = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-            config.wirelessHotspotMode == WirelessHotspotMode.WIFI_P2P
-        ) {
-            WirelessHotspotMode.LOCAL_ONLY_HOTSPOT
-        } else {
-            config.wirelessHotspotMode
+        // Android 10+ can choose the Wi-Fi Direct group SSID, passphrase and frequency directly.
+        // Android 8/9 cannot, so a LocalOnlyHotspot is preferred there. Android 7/7.1 have neither:
+        // LocalOnlyHotspot only exists from API 26, so the legacy Wi-Fi Direct group — platform
+        // chosen credentials and an unreported channel — is the only wireless option.
+        val hotspotMode = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> config.wirelessHotspotMode
+            config.wirelessHotspotMode == WirelessHotspotMode.MANUAL -> WirelessHotspotMode.MANUAL
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> WirelessHotspotMode.LOCAL_ONLY_HOTSPOT
+            else -> WirelessHotspotMode.WIFI_P2P
         }
         if (hotspotMode == WirelessHotspotMode.MANUAL &&
             com.shilapi.xcertplay.network.CarHotspotStatus.isEnabled(appContext) == false
