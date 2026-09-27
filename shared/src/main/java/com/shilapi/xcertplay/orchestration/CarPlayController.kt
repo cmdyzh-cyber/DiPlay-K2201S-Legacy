@@ -73,8 +73,11 @@ import com.shilapi.xcertplay.transport.NcmFunctionDiscovery
 import com.shilapi.xcertplay.transport.NcmUsbBridge
 import java.io.Closeable
 import java.io.IOException
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.Inet6Address
+import java.net.NetworkInterface
+import java.util.Collections
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -932,7 +935,7 @@ class CarPlayController(
                 passphrase = hotspotInfo.passphrase,
                 channel = hotspotInfo.channel,
                 security = hotspotInfo.security,
-                ipAddresses = listOf(hostAddressText),
+                ipAddresses = hostAddressTexts(hotspotInfo.interfaceName, hostAddressText),
                 airPlayPort = airPlayConfig.port,
                 deviceIdentifier = deviceIdentifier,
                 publicKey = identity.publicKeyHex,
@@ -1770,6 +1773,25 @@ class CarPlayController(
             throw IOException("LocalOnlyHotspot host address is unavailable")
         }
         return text
+    }
+
+    /**
+     * Every routable address of the hotspot interface, preferred address first. The iAP2 wireless
+     * configuration accepts a list, and the iPhone only connects over the family it actually
+     * negotiated on that network — advertising a single link-local IPv6 strands an IPv4-only peer.
+     */
+    private fun hostAddressTexts(interfaceName: String?, preferred: String): List<String> {
+        val addresses = interfaceName
+            ?.let { name -> runCatching { NetworkInterface.getByName(name) }.getOrNull() }
+            ?.let { nic -> Collections.list(nic.inetAddresses) }
+            .orEmpty()
+        val candidates = listOf(
+            addresses.filterIsInstance<Inet6Address>()
+                .firstOrNull { !it.isLoopbackAddress }?.hostAddress?.substringBefore('%'),
+            addresses.filterIsInstance<Inet4Address>()
+                .firstOrNull { !it.isLoopbackAddress }?.hostAddress,
+        ).filterNotNull().filter { it.isNotBlank() }
+        return (candidates + preferred).distinct()
     }
 
     private fun closeBestEffort(name: String, close: () -> Unit) {

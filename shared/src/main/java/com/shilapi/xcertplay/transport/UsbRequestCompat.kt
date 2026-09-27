@@ -42,9 +42,14 @@ internal class UsbRequestCompat : Closeable {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return connection.requestWait(timeoutMillis)
         }
-        val pending: Future<UsbRequest?> = waitExecutor.submit(Callable { connection.requestWait() })
+        // Reuse a wait that is still blocked after a timeout. Cancelling the queued request wakes
+        // it; submitting a fresh one would only queue behind it and time out again.
+        val future = inFlight
+            ?: waitExecutor.submit(Callable { connection.requestWait() }).also { inFlight = it }
         return try {
-            pending.get(timeoutMillis, TimeUnit.MILLISECONDS)
+            val completed = future.get(timeoutMillis, TimeUnit.MILLISECONDS)
+            inFlight = null
+            completed
         } catch (_: TimeoutException) {
             throw TimeoutException("USB request did not complete within ${timeoutMillis}ms")
         } catch (_: InterruptedException) {
@@ -57,6 +62,8 @@ internal class UsbRequestCompat : Closeable {
             throw IllegalStateException("USB request wait failed", cause)
         }
     }
+
+    @Volatile private var inFlight: Future<UsbRequest?>? = null
 
     override fun close() {
         waitExecutor.shutdownNow()

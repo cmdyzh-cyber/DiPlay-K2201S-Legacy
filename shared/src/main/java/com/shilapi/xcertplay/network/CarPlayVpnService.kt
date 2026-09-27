@@ -19,10 +19,8 @@ import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -168,8 +166,11 @@ class CarPlayVpnService : VpnService() {
         replacement: AirPlayAttachment,
     ) {
         val server = ServerSocket()
-        val bindAddress = scopedAddress(replacement.address) ?: InetAddress.getByName("::")
-        Log.i(TAG, "airplay listener bind=$bindAddress port=${replacement.config.port}")
+        // Dual-stack wildcard: the iPhone reaches the accessory over whichever family its own
+        // interface negotiated. A socket bound to one link-local IPv6 address refuses IPv4.
+        val bindAddress = InetAddress.getByName("::")
+        Log.i(TAG, "airplay listener bind=$bindAddress port=${replacement.config.port} " +
+            "attachment=${replacement.address.hostAddress}")
         server.bind(InetSocketAddress(bindAddress, replacement.config.port))
         attachment = replacement
         serverSocket = server
@@ -180,31 +181,6 @@ class CarPlayVpnService : VpnService() {
             isDaemon = true
             start()
         }
-    }
-
-    /**
-     * A link-local IPv6 literal parsed from text carries no scope, and the kernel rejects bind() on
-     * it with EINVAL ("Invalid argument"). The wired path passes the configured "fe80::2" literal,
-     * so the interface that owns the address supplies the scope. Addresses already scoped by a
-     * NetworkInterface enumeration are returned unchanged.
-     *
-     * Returns null when the address is an unscoped link-local that no interface claims; the caller
-     * then binds the wildcard, which still accepts the peer arriving over the tun.
-     */
-    private fun scopedAddress(address: InetAddress): InetAddress? {
-        if (address !is Inet6Address) return address
-        if (!address.isLinkLocalAddress || address.scopeId != 0) return address
-        val index = Collections.list(NetworkInterface.getNetworkInterfaces())
-            .firstOrNull { nic ->
-                Collections.list(nic.inetAddresses).any { it.address.contentEquals(address.address) }
-            }
-            ?.index
-        if (index == null) {
-            Log.w(TAG, "no interface owns ${address.hostAddress}; binding the wildcard address")
-            return null
-        }
-        Log.i(TAG, "resolved link-local scope for ${address.hostAddress} to interface index $index")
-        return Inet6Address.getByAddress(null, address.address, index)
     }
 
     private fun acceptLoop(
