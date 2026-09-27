@@ -194,7 +194,7 @@ class NcmUsbBridge internal constructor(
             }
             if (!padLogged && padded && wireLength == blockLength) {
                 padLogged = true
-                Log.i(TAG, "NTB16 block without the expected pad byte; accepting a ZLP terminator")
+                Log.i(IphoneCarPlayConfiguration.TAG, "NTB16 block without the expected pad byte; accepting a ZLP terminator")
             }
             for (frame in Ntb16Codec.parse(buffered, 0, blockLength)) enqueueFrame(frame)
             val remaining = bufferedSize - wireLength
