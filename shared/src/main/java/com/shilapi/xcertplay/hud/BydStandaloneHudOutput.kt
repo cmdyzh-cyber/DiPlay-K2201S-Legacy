@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
@@ -11,8 +12,7 @@ import android.util.Log
 import java.security.MessageDigest
 
 /** Ordinary-app IPC to the real stock receiver. No shell, local socket or permission grant. */
-internal class BydStandaloneHudOutput private constructor(context: Context) {
-    private val app = context.applicationContext
+internal class BydStandaloneHudOutput private constructor(context: Context) {    private val app = context.applicationContext
     private val prefs = app.getSharedPreferences("byd_standalone_hud", Context.MODE_PRIVATE)
     private val session = BydStandaloneSession(
         send = { packet ->
@@ -55,7 +55,7 @@ internal class BydStandaloneHudOutput private constructor(context: Context) {
                 val info = manager.getPackageInfo(TARGET.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
                 val receiver = manager.getReceiverInfo(TARGET, 0)
                 val signers = info.signingInfo?.apkContentsSigners ?: return false
-                info.longVersionCode == 10601004L &&
+                info.versionCodeCompat() == 10601004L &&
                     info.applicationInfo!!.flags and ApplicationInfo.FLAG_SYSTEM != 0 &&
                     receiver.enabled && receiver.exported && receiver.permission.isNullOrEmpty() &&
                     signers.size == 1 && MessageDigest.getInstance("SHA-256").digest(signers[0].toByteArray())
@@ -65,3 +65,11 @@ internal class BydStandaloneHudOutput private constructor(context: Context) {
         }
     }
 }
+
+/**
+ * PackageInfo.longVersionCode is API 28. Every caller above already refuses to run below 28, but
+ * the explicit check keeps lint and the compiler honest on the API 24 floor.
+ */
+@Suppress("DEPRECATION")
+private fun PackageInfo.versionCodeCompat(): Long =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) longVersionCode else versionCode.toLong()

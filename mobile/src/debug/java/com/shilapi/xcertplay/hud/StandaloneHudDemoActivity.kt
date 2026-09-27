@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -86,7 +87,7 @@ class StandaloneHudDemoActivity : Activity() {
             "此测试仅限已验证的固件"
         }
         val info = packageManager.getPackageInfo(target.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
-        check(info.longVersionCode == 10601004L) { "原厂接收端版本不同" }
+        check(info.versionCodeCompat() == 10601004L) { "原厂接收端版本不同" }
         check(info.applicationInfo!!.flags and ApplicationInfo.FLAG_SYSTEM != 0)
         val certs = info.signingInfo!!.apkContentsSigners
         check(certs.size == 1 && MessageDigest.getInstance("SHA-256").digest(certs[0].toByteArray())
@@ -144,3 +145,8 @@ class StandaloneHudDemoActivity : Activity() {
     override fun onDestroy() { clear("界面已销毁"); super.onDestroy() }
     companion object { private const val TAG = "BYD-Standalone" }
 }
+
+/** PackageInfo.longVersionCode is API 28; the deprecated field covers the API 24 floor. */
+@Suppress("DEPRECATION")
+private fun PackageInfo.versionCodeCompat(): Long =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) longVersionCode else versionCode.toLong()
