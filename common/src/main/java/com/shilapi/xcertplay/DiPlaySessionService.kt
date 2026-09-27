@@ -27,7 +27,7 @@ class DiPlaySessionService : Service() {
         // Android 7/7.1 posts the notification on the legacy channel-less path instead.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL, "CarPlay connection", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CHANNEL, "CarPlay 连接", NotificationManager.IMPORTANCE_LOW),
             )
         }
         val open = PendingIntent.getActivity(this, 0, Intent(this, CarPlayHostActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -41,9 +41,9 @@ class DiPlaySessionService : Service() {
         val notification = builder
             .setSmallIcon(R.drawable.ic_diplay_notification)
             .setContentTitle("DiPlay")
-            .setContentText("CarPlay connection running")
+            .setContentText("CarPlay 连接运行中")
             .setContentIntent(open).setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Disconnect", stop).build()).build()
+            .addAction(Notification.Action.Builder(null, "断开连接", stop).build()).build()
         if (Build.VERSION.SDK_INT >= 29) {
             var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             if (Build.VERSION.SDK_INT >= 30 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
