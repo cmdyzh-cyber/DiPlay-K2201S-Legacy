@@ -95,10 +95,15 @@ internal fun observedManualHotspotChannel(
     connectionFrequencyMHz: Int?,
     scanFrequencyMHz: Int?,
     apFrequencyMHz: Int?,
+    configuredChannel: Int = 0,
 ): Int {
     if (apChannel > 0) return apChannel
     connectionFrequencyMHz?.let(::wifiFrequencyMhzToChannel)?.let { return it }
     scanFrequencyMHz?.let(::wifiFrequencyMhzToChannel)?.let { return it }
     apFrequencyMHz?.let(::wifiFrequencyMhzToChannel)?.let { return it }
+    // Android 7 through 9 cannot observe an "auto" hotspot channel through public APIs. The
+    // channel the deployment configured in the car settings is the only remaining answer, and it
+    // is correct whenever the AP honours it.
+    if (configuredChannel > 0) return configuredChannel
     return 0
 }

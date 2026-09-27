@@ -47,6 +47,12 @@ class ManualHotspotManager(
     private val passphrase = passphrase
     private val expectedBand = band
     private val expectedChannel = channel
+    /** SoftApConfiguration band code for [expectedBand], used to convert the channel to a frequency. */
+    private val expectedBandCode: Int? = when (band) {
+        ManualHotspotBand.GHZ_2_4 -> 1
+        ManualHotspotBand.GHZ_5 -> 2
+        ManualHotspotBand.AUTO -> null
+    }
     private val expectedSecurity = security.toIap2Security()
 
     @Volatile
@@ -96,11 +102,13 @@ class ManualHotspotManager(
                     connectionFrequencyMHz = connectionFrequency,
                     scanFrequencyMHz = scanFrequency,
                     apFrequencyMHz = apConfiguration?.frequencyMHz,
+                    configuredChannel = expectedChannel,
                 )
                 val frequencyMHz = when {
                     apConfiguration?.frequencyMHz != null -> apConfiguration.frequencyMHz
                     connectionFrequency != null -> connectionFrequency
                     scanFrequency != null -> scanFrequency
+                    channel > 0 -> wifiChannelToFrequencyMhz(channel, expectedBandCode)
                     else -> null
                 }
                 val security = apConfiguration?.security ?: expectedSecurity
