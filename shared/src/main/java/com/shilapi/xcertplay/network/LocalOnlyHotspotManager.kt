@@ -268,12 +268,11 @@ class LocalOnlyHotspotManager(context: Context) : WirelessHotspotManager {
         val ssid = validateSsid(configuration.SSID)
         val security = mapWifiConfigurationSecurity(configuration)
         val passphrase = validatePassphrase(security, unquote(configuration.preSharedKey))
-        val bssid = configuration.BSSID?.let {
-            try {
-                MacAddress.fromString(it)
-            } catch (failure: IllegalArgumentException) {
-                throw IOException("LocalOnlyHotspot reported an invalid BSSID: $it", failure)
-            }
+        // android.net.MacAddress is API 28, so Android 8/8.1 parse the BSSID by hand.
+        val bssidText = configuration.BSSID?.takeIf { it.isNotBlank() }
+        val bssidBytes = bssidText?.let { text ->
+            parseMacAddressBytes(text)
+                ?: throw IOException("LocalOnlyHotspot reported an invalid BSSID: $text")
         }
         val channel = readWifiConfigurationChannel(configuration)
 
@@ -282,11 +281,27 @@ class LocalOnlyHotspotManager(context: Context) : WirelessHotspotManager {
             passphrase = passphrase,
             security = security,
             channel = channel,
-            bssid = bssid?.toString(),
-            bssidBytes = bssid?.toByteArray(),
+            bssid = bssidBytes?.let(::formatMacAddress),
+            bssidBytes = bssidBytes,
             bandLabel = readWifiConfigurationBandLabel(configuration, channel),
         )
     }
+
+    /** Parses "aa:bb:cc:dd:ee:ff" without android.net.MacAddress, which is API 28. */
+    private fun parseMacAddressBytes(text: String): ByteArray? {
+        val parts = text.split(':', '-')
+        if (parts.size != 6) return null
+        val bytes = ByteArray(6)
+        for ((index, part) in parts.withIndex()) {
+            if (part.length != 2) return null
+            bytes[index] = part.toIntOrNull(16)?.toByte() ?: return null
+        }
+        return bytes
+    }
+
+    /** Matches MacAddress.toString(): lowercase, colon separated. */
+    private fun formatMacAddress(bytes: ByteArray): String =
+        bytes.joinToString(":") { "%02x".format(it.toInt() and 0xff) }
 
     @RequiresApi(36)
     private fun readConfiguredChannel(configuration: SoftApConfiguration): Pair<Int, String> {

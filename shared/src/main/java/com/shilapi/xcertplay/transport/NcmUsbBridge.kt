@@ -46,6 +46,7 @@ class NcmUsbBridge internal constructor(
     // transfer (seen as ~0.8 s stalls of video and audio). A timed-out request stays queued, so no
     // data is lost between calls. This is the only requestWait() user on this connection.
     private val directReadBuffer = ByteBuffer.allocateDirect(READ_CHUNK_BYTES)
+    private val usbCompat = UsbRequestCompat()
     private var readRequest: UsbRequest? = null
     private var readQueued = false
     private val statusRunning = AtomicBoolean(statusEndpoint != null)
@@ -136,6 +137,7 @@ class NcmUsbBridge internal constructor(
         }
         connection.close()
         runCatching { requestToClose?.close() }
+        usbCompat.close()
     }
 
     private fun drainStatus(endpoint: UsbEndpoint) {
@@ -232,7 +234,7 @@ class NcmUsbBridge internal constructor(
                 }
                 if (!readQueued) {
                     directReadBuffer.clear()
-                    if (!current.queue(directReadBuffer)) throw failSession("Android could not queue the NCM read request")
+                    if (!usbCompat.queue(current, directReadBuffer)) throw failSession("Android could not queue the NCM read request")
                     readQueued = true
                 }
                 current
@@ -242,7 +244,7 @@ class NcmUsbBridge internal constructor(
         }
         try {
             val completed = try {
-                connection.requestWait(timeoutMillis.coerceAtLeast(1))
+                usbCompat.requestWait(connection, timeoutMillis.coerceAtLeast(1))
             } catch (_: TimeoutException) {
                 // Nothing arrived yet; the request stays queued for the next call. USBMUX owns
                 // authoritative detach/failure detection for the same phone.

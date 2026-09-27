@@ -43,6 +43,7 @@ class WifiP2pGroupManager(
     private val appContext = context.applicationContext
     private val p2pManager = appContext.getSystemService(WifiP2pManager::class.java)
         ?: throw IllegalStateException("WifiP2pManager is unavailable")
+    private val wifiManager = appContext.getSystemService(WifiManager::class.java)
     private val stateLock = Object()
     private val random = SecureRandom()
     private val configurationMemory = P2pConfigurationMemory(appContext)
@@ -398,7 +399,7 @@ class WifiP2pGroupManager(
             val reportedFrequencyMHz = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 group.frequency
             } else {
-                0
+                fallbackGroupFrequencyMHz(networkName)
             }
             if (networkName == null || passphrase == null || interfaceName == null) {
                 lastReason = "incomplete group details frequencyMHz=$reportedFrequencyMHz"
@@ -449,6 +450,25 @@ class WifiP2pGroupManager(
                 backend = WirelessHotspotBackend.WIFI_P2P,
             )
         }
+    }
+
+    /**
+     * Android 7 through 9 never expose the group channel through a public API, and the iAP2
+     * accessory Wi-Fi configuration needs one. A cached scan result for the group's own SSID is
+     * exact when it is present; otherwise the station channel is the best available answer, because
+     * AOSP normally places the group owner on the station channel (the API 29+ aligned modes above
+     * rely on the same behaviour). 0 stays the last resort, which makes the iPhone scan instead.
+     */
+    private fun fallbackGroupFrequencyMHz(groupSsid: String?): Int {
+        val scanned = runCatching {
+            wifiManager?.scanResults
+                ?.firstOrNull { it.SSID == groupSsid && it.frequency > 0 }
+                ?.frequency
+        }.getOrNull()
+        if (scanned != null && wifiFrequencyMhzToChannel(scanned) != null) return scanned
+        return runCatching {
+            wifiManager?.connectionInfo?.frequency?.takeIf { wifiFrequencyMhzToChannel(it) != null }
+        }.getOrNull() ?: 0
     }
 
     private fun requestGroupInfo(
