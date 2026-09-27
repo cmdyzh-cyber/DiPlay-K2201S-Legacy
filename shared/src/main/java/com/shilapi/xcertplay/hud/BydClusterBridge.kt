@@ -45,7 +45,7 @@ internal object BydClusterBridge {
             factory = BydFactoryNavigationOutput(appContext.applicationContext)
             available = true
         }
-        Log.i(TAG, "cluster adapter available=$available factoryTest=${factory != null}")
+        Log.i(TAG, "仪表适配器 可用=$available 工厂测试=${factory != null}")
         if (available && !senderStarted) {
             senderStarted = true
             Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -107,7 +107,7 @@ internal object BydClusterBridge {
             ticksSinceSend = 0
             if (!guidanceLogged) {
                 guidanceLogged = true
-                Log.i(TAG, "cluster guidance sent $frame")
+                Log.i(TAG, "已发送仪表导航指引 $frame")
             }
         }
     }
@@ -131,7 +131,7 @@ internal object BydClusterBridge {
         if (!broadcastLocked(intent)) return
         lastSent = null
         guidanceLogged = false
-        Log.i(TAG, "cluster guidance ended")
+        Log.i(TAG, "仪表导航指引已结束")
     }
 
     // IS_BYD_MAP=true is required: the adapter drops foreign frames while it believes the stock map navigates.
@@ -149,7 +149,7 @@ internal object BydClusterBridge {
             appContext.sendBroadcast(intent)
             true
         } catch (error: RuntimeException) {
-            Log.w(TAG, "cluster broadcast failed", error)
+            Log.w(TAG, "仪表广播失败", error)
             false
         }
     }

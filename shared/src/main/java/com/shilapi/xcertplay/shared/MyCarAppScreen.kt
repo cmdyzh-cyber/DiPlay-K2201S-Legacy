@@ -8,9 +8,9 @@ import androidx.car.app.model.Template
 
 class MyCarAppScreen(carContext: CarContext) : Screen(carContext) {
     override fun onGetTemplate(): Template {
-        return MessageTemplate.Builder("Hardware transport is not configured. Board I2C needs a /dev/i2c-N path and OS/SELinux permission; CH341 needs deployed VID/PID configuration.")
+        return MessageTemplate.Builder("硬件传输未配置。板载 I2C 需要 /dev/i2c-N 路径以及系统/SELinux 权限；CH341 需要部署对应的 VID/PID 配置。")
             .setHeaderAction(Action.APP_ICON)
-            .setTitle("xcertplay hardware status")
+            .setTitle("xcertplay 硬件状态")
             .build()
     }
 }

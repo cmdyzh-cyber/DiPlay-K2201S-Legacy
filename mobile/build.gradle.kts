@@ -39,8 +39,9 @@ android {
 
     buildTypes {
         debug {
+            // The BYD HUD bridges gate on this suffix, so it stays. The launcher label and the
+            // version name no longer carry any "test" marker.
             applicationIdSuffix = ".hudtest"
-            versionNameSuffix = "-hud-test"
         }
         release {
             optimization {

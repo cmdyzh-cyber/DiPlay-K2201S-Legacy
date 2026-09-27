@@ -18,18 +18,18 @@ internal class BydStandaloneHudOutput private constructor(context: Context) {
         send = { packet ->
             app.sendBroadcast(Intent("byd.hud.NAVIGATION").setComponent(TARGET)
                 .putExtra("normal", packet).addFlags(Intent.FLAG_RECEIVER_FOREGROUND))
-            Log.d(TAG, "dispatch uid=${Process.myUid()} bytes=${packet.split(',').size}")
+            Log.d(TAG, "派发 uid=${Process.myUid()} 字节=${packet.split(',').size}")
         },
         rememberPendingClear = { pending ->
-            check(prefs.edit().putBoolean("pending_clear", pending).commit()) { "Cannot persist HUD cleanup" }
+            check(prefs.edit().putBoolean("pending_clear", pending).commit()) { "无法持久化 HUD 清理状态" }
         },
         needsRecovery = prefs.getBoolean("pending_clear", false),
     )
 
     init {
-        Log.i(TAG, "Standalone navigation ready uid=${Process.myUid()} helper=none")
+        Log.i(TAG, "独立导航已就绪 uid=${Process.myUid()} 辅助=none")
         // Retain the journal if dispatch fails; the next scheduled tick retries.
-        runCatching { session.clear() }.onFailure { Log.w(TAG, "Startup clear will retry", it) }
+        runCatching { session.clear() }.onFailure { Log.w(TAG, "启动清理将重试", it) }
     }
 
     fun update(icon: Int, exit: Int, distanceMeters: Int, road: String) =

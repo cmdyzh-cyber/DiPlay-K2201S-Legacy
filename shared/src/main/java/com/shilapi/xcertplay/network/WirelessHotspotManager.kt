@@ -7,7 +7,7 @@ import java.net.InetAddress
 enum class WirelessHotspotBackend(val label: String) {
     WIFI_P2P("Wi-Fi P2P"),
     LOCAL_ONLY_HOTSPOT("LocalOnlyHotspot"),
-    MANUAL_HOTSPOT("Manual hotspot"),
+    MANUAL_HOTSPOT("手动热点"),
 }
 
 /** The live Wi-Fi credentials and interface details for one wireless CarPlay hotspot. */

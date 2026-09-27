@@ -49,7 +49,7 @@ class SafeAreaEditorView(context: Context) : View(context) {
 
     fun setRect(value: SafeAreaRect, sourceWidthPixels: Int, sourceHeightPixels: Int) {
         require(sourceWidthPixels > 0 && sourceHeightPixels > 0) {
-            "Source dimensions must be positive"
+            "源尺寸必须为正数"
         }
         sourceWidth = sourceWidthPixels
         sourceHeight = sourceHeightPixels
