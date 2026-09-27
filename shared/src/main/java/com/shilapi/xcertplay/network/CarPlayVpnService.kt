@@ -171,6 +171,10 @@ class CarPlayVpnService : VpnService() {
         val bindAddress = InetAddress.getByName("::")
         Log.i(TAG, "airplay listener bind=$bindAddress port=${replacement.config.port} " +
             "attachment=${replacement.address.hostAddress}")
+        replacement.listener.onDebugLog(
+            "airplay listener bind=$bindAddress port=${replacement.config.port} " +
+                "attachment=${replacement.address.hostAddress}",
+        )
         server.bind(InetSocketAddress(bindAddress, replacement.config.port))
         attachment = replacement
         serverSocket = server
@@ -191,6 +195,9 @@ class CarPlayVpnService : VpnService() {
             while (active.get()) {
                 val socket: Socket = server.accept()
                 Log.i(TAG, "airplay connection accepted from ${socket.remoteSocketAddress}")
+                attachment?.listener?.onDebugLog(
+                    "airplay connection accepted from ${socket.remoteSocketAddress}",
+                )
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
                 socket.setSoLinger(true, 0)
