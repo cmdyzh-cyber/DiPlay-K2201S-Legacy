@@ -8,6 +8,7 @@ import android.os.Build
 import android.util.Log
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
+import com.shilapi.xcertplay.airplay.AirPlayInfoPlist
 import java.io.BufferedReader
 import java.io.Closeable
 import java.io.IOException
@@ -68,27 +69,36 @@ object CarPlayBonjourProtocol {
      *
      * This must agree with the `features` value of the AirPlay `/info` response, otherwise iOS
      * sees a receiver that is not CarPlay-capable during Bonjour discovery and never opens the
-     * AirPlay connection at all. The low 32 bits are what iOS validates, so they are published
-     * directly; the high word carries bits above 31 (`SupportsCarPlayDisplay`, MFi auth) which
-     * the classic AirPlay comma-separated form encodes as extra decimal fields.
-     */
-    internal const val AIRPLAY_FEATURES_LOW = 0x615653aee2L
-
-    /**
-     * `features` TXT value for `_airplay._tcp`.
+     * AirPlay connection at all. `AirPlayInfoPlist.CARPLAY_FEATURES` is the single source of truth.
      *
-     * CarPlay receivers publish `"<low32>,<high32>,<extra>"`. Every bit iOS requires for CarPlay
-     * lives in the low 32 bits, so the low field must be `0x615653aee2` exactly; the two trailing
-     * zero-valued fields keep the record shape that Apple's own receivers use.
+     * Apple's own receiver builds the TXT value in `AirPlayReceiverServer.c`:
+     *
+     * ```
+     * u32 = (uint32_t)( ( features >> 32 ) & 0xFFFFFFFF );
+     * if( u32 != 0 ) snprintf( "0x%X,0x%X", (uint32_t)( features & 0xFFFFFFFF ), u32 );
+     * else          snprintf( "0x%X",    (uint32_t)( features & 0xFFFFFFFF ) );
+     * ```
+     *
+     * so the record is `<low 32 bits>,<high 32 bits>` — the 64-bit value is *split*, not printed
+     * whole. A whole-value first field hides every bit above 31 from iOS, which is exactly where
+     * `kAirPlayFeature_Car` (bit 32, `0x100000000`, "Car support") lives.
      */
-    internal const val AIRPLAY_FEATURES_TXT = "0x615653aee2,0x0,0x0"
+    internal fun airPlayFeaturesTxt(features: Long): String {
+        val low = features and 0xFFFF_FFFFL
+        val high = (features ushr 32) and 0xFFFF_FFFFL
+        return if (high != 0L) {
+            "0x%X,0x%X".format(low, high)
+        } else {
+            "0x%X".format(low)
+        }
+    }
 
     fun airPlayTxtRecords(
         config: AirPlayConfig,
         identity: AirPlayIdentity,
     ): Map<String, String> = linkedMapOf(
         "deviceid" to config.deviceId,
-        "features" to AIRPLAY_FEATURES_TXT,
+        "features" to airPlayFeaturesTxt(AirPlayInfoPlist.CARPLAY_FEATURES),
         "flags" to "0x4",
         "model" to config.model,
         "srcvers" to config.sourceVersion,

@@ -14,7 +14,20 @@ object AirPlayInfoPlist {
     private const val STREAM_TYPE_ALT_SCREEN = 111
     private const val DISPLAY_FEATURE_KNOBS = 0x02
     private const val DISPLAY_FEATURE_HIGH_FIDELITY_TOUCH = 0x08
-    private const val CARPLAY_FEATURES = 0x615653aee2L
+
+    /**
+     * AirPlay feature flags. Published in two places that iOS cross-checks:
+     *
+     *  - the `features` key of the `_airplay._tcp` Bonjour TXT record (discovery), and
+     *  - the `features` key of this `/info` response (after connecting).
+     *
+     * `0x615653aee2` is `0x61 << 32 | 0x5653aee2`, so it carries the 64-bit bits Apple's
+     * `AirPlayCommon.h` names, notably `kAirPlayFeature_Car` (bit 32, "Car support") and
+     * `kAirPlayFeature_UnifiedBonjour` (bit 30). `AIRPLAY_FEATURES_TXT` renders it with Apple's
+     * own `<low32>,<high32>` split so the high word reaches iOS; a whole-value first field would
+     * silently drop every bit above 31, including `kAirPlayFeature_Car`.
+     */
+    const val CARPLAY_FEATURES = 0x615653aee2L
     private const val CARPLAY_AUDIO_FEATURES = 0x10004540a00L
     private val CARPLAY_FEATURES_NO_AUDIO = CARPLAY_FEATURES and CARPLAY_AUDIO_FEATURES.inv()
 
