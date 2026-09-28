@@ -81,7 +81,9 @@ import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.Inet6Address
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
+import java.net.Socket
 import java.util.Collections
 import java.util.Locale
 import java.util.UUID
@@ -241,6 +243,16 @@ class CarPlayController(
      */
     private val wirelessControlDiscoveryEvents = AtomicInteger(0)
     private val wirelessAirPlayConnections = AtomicInteger(0)
+
+    /**
+     * True once this run actually got a hotspot up, so the verdict has something to report.
+     *
+     * `runWireless` calls [closeWirelessStack] first to clear any previous run, and that cleanup
+     * would otherwise emit a verdict with freshly-reset counters — a line that reads like a real
+     * result ("verdict=discovery, session ended early") but is pure noise, and it buries the one
+     * meaningful verdict under a duplicate.
+     */
+    @Volatile private var wirelessRunReachedHotspot = false
 
     private var permissionCloseable: Closeable? = null
     private var attachCloseable: Closeable? = null
@@ -802,6 +814,7 @@ class CarPlayController(
         wirelessActiveReported.set(false)
         wirelessControlDiscoveryEvents.set(0)
         wirelessAirPlayConnections.set(0)
+        wirelessRunReachedHotspot = false
         onStatus(CarPlayStatus.StartingHotspot)
         val generation = wirelessGeneration.incrementAndGet()
         executor.execute {
@@ -838,6 +851,8 @@ class CarPlayController(
             val mfi = mfiSession?.client
                 ?: throw IOException("MFi coprocessor client is unavailable")
             val hotspotInfo = startWirelessHotspot(generation)
+            // From here on a verdict is meaningful, so teardown may report one.
+            wirelessRunReachedHotspot = true
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
@@ -963,6 +978,11 @@ class CarPlayController(
                     "iface=${hotspotInfo.interfaceName ?: "unknown"} " +
                     "host=${hostAddressText} port=${wirelessAirPlayConfig.port}",
             )
+            // Run after Bonjour so the log reads in causal order, and off the main thread because
+            // each attempt can block for the connect timeout.
+            executor.execute {
+                selfTestAirPlayPort(hotspotInfo.interfaceName, wirelessAirPlayConfig.port)
+            }
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
@@ -1096,6 +1116,8 @@ class CarPlayController(
      *   handshake (`/pair-*`, `/auth-setup`, SETUP) — read those lines, not the discovery ones.
      */
     private fun logWirelessBringUpVerdict(result: Iap2WirelessControlResult?) {
+        // Nothing to report until a hotspot exists; otherwise this fires from the pre-run cleanup.
+        if (!wirelessRunReachedHotspot) return
         val discoveryEvents = wirelessControlDiscoveryEvents.get()
         val airPlayConnections = wirelessAirPlayConnections.get()
         val verdict = when {
@@ -1130,6 +1152,8 @@ class CarPlayController(
         Thread(
             {
                 var lastReported = -1
+                var nextVerdictNanos = System.nanoTime() +
+                    WIRELESS_VERDICT_INTERVAL_MILLIS * 1_000_000L
                 val deadline = System.nanoTime() +
                     WIRELESS_CLIENT_WATCH_MILLIS * 1_000_000L
                 while (
@@ -1147,6 +1171,16 @@ class CarPlayController(
                                 "wireless group clients=$count；已有设备加入本机 Wi-Fi"
                             },
                         )
+                    }
+                    // Repeat the verdict on a timer. The teardown verdict is unreliable in exactly
+                    // the case that matters most: when the user gives up and force-closes, the app
+                    // dies before teardown finishes and the report ends with no verdict at all
+                    // (observed on the run-34 report). A periodic line guarantees the report always
+                    // carries a recent summary.
+                    val now = System.nanoTime()
+                    if (now >= nextVerdictNanos) {
+                        nextVerdictNanos = now + WIRELESS_VERDICT_INTERVAL_MILLIS * 1_000_000L
+                        logWirelessBringUpVerdict(null)
                     }
                     try {
                         Thread.sleep(WIRELESS_CLIENT_WATCH_POLL_MILLIS)
@@ -2143,6 +2177,46 @@ class CarPlayController(
         else -> "IPv4"
     }
 
+    /**
+     * Connects to our own AirPlay port over every address the hotspot interface holds.
+     *
+     * A listener bound to the IPv6 wildcard `::` does **not** necessarily accept IPv4: that depends
+     * on `IPV6_V6ONLY`, whose default is platform-specific. Nothing else in the log can tell that
+     * apart from "the phone never dialled", because both look identical — no
+     * `airplay connection accepted from` line. This self-connect is the only check that does not
+     * depend on the phone doing anything at all.
+     */
+    private fun selfTestAirPlayPort(interfaceName: String?, port: Int) {
+        val nic = interfaceName
+            ?.let { name -> runCatching { NetworkInterface.getByName(name) }.getOrNull() }
+            ?: return
+        val targets = Collections.list(nic.inetAddresses).filter { !it.isLoopbackAddress }
+        if (targets.isEmpty()) {
+            debugLog("wireless self-test skipped: iface=$interfaceName has no address")
+            return
+        }
+        for (target in targets) {
+            val label = if (target is Inet4Address) "IPv4" else "IPv6"
+            val outcome = runCatching {
+                Socket().use { socket ->
+                    socket.bind(InetSocketAddress(target, 0))
+                    socket.connect(
+                        InetSocketAddress(target, port),
+                        SELF_TEST_CONNECT_TIMEOUT_MILLIS,
+                    )
+                }
+            }
+            debugLog(
+                if (outcome.isSuccess) {
+                    "wireless self-test $label port=$port reachable=true"
+                } else {
+                    "wireless self-test $label port=$port reachable=false " +
+                        "reason=${outcome.exceptionOrNull()?.javaClass?.simpleName}"
+                },
+            )
+        }
+    }
+
     private fun closeBestEffort(name: String, close: () -> Unit) {
         try {
             close()
@@ -2365,6 +2439,10 @@ class CarPlayController(
         /** How long the wireless bring-up keeps watching for a device joining the group. */
         private const val WIRELESS_CLIENT_WATCH_MILLIS = 120_000L
         private const val WIRELESS_CLIENT_WATCH_POLL_MILLIS = 2_000L
+        /** How often the wireless verdict is repeated while a bring-up is still running. */
+        private const val WIRELESS_VERDICT_INTERVAL_MILLIS = 15_000L
+        /** Bound on the loopback-free self-connect that proves the AirPlay port is reachable. */
+        private const val SELF_TEST_CONNECT_TIMEOUT_MILLIS = 2_000
         private const val PAIR_TIMEOUT_MILLIS = 5 * 60_000L
         private const val VPN_CONNECT_TIMEOUT_MILLIS = 10_000L
         private const val CONTROL_LOOP_TIMEOUT_MILLIS = 5 * 60_000L
