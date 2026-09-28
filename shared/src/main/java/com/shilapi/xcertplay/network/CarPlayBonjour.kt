@@ -361,7 +361,9 @@ class CarPlayBonjour(
                     // looks identical to a started one from the outside. Log the interface it
                     // actually bound to, so a silent bind failure shows up in the report.
                     // Hoisted into locals: a quoted literal inside ${...} breaks Kotlin parsing.
-                    val boundInterface = runCatching { dns.interface }.getOrNull()
+                    // `interface` is a soft keyword in Kotlin, so the property must be called
+                    // through its getter — `dns.interface` does not parse.
+                    val boundInterface = runCatching { dns.getInterface() }.getOrNull()
                     val boundInterfaceText = boundInterface?.hostAddress ?: "unavailable"
                     val txtFeatures = CarPlayBonjourProtocol
                         .airPlayTxtRecords(config, identity)["features"]
