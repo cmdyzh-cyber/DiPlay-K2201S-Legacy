@@ -7,6 +7,10 @@ plugins {
 val localAuthenticationAssets = providers.environmentVariable("DIPLAY_AUTH_ASSETS_DIR")
     .orNull?.let { file(it).canonicalFile }
 
+// Optional build stamp. CI sets this to the workflow run number so every APK and every
+// exported diagnostic report can be traced back to one exact build.
+val buildNumber = providers.environmentVariable("DIPLAY_BUILD_NUMBER").orNull
+
 android {
     namespace = "com.shilapi.xcertplay"
     compileSdk {
@@ -18,7 +22,7 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = 20
-        versionName = "0.2.0"
+        versionName = buildNumber?.let { "2.0（$it）" } ?: "2.0"
 
     }
 

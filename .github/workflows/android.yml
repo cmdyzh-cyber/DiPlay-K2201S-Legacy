@@ -43,6 +43,14 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
       - uses: gradle/actions/setup-gradle@v6
+      # Every build stamps itself so an exported diagnostic report can be traced back to the
+      # exact commit that produced its APK. The number is the workflow run number, which
+      # increases monotonically, so "2.0（07）" always means a later build than "2.0（06）".
+      - name: Stamp the build number
+        run: |
+          set -euo pipefail
+          echo "DIPLAY_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "debug versionName will be stamped 2.0（${GITHUB_RUN_NUMBER}）"
       # Lint and the unit tests report on the source but must not stop the APK step below.
       - name: Unit tests and lint
         continue-on-error: true
@@ -56,8 +64,10 @@ jobs:
           APK=$(ls mobile/build/outputs/apk/debug/*.apk | head -1)
           echo "APK: $APK"
           AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
-          "$AAPT2" dump badging "$APK" | grep -E "^package:|^minSdkVersion:|^targetSdkVersion:|^application-label:" || true
+          "$AAPT2" dump badging "$APK" | grep -E "^package:|^minSdkVersion:|^targetSdkVersion:|^application-label:|^application: " || true
           unzip -l "$APK" | grep -E "offline-mfi" || echo "offline-mfi assets: absent"
+          echo "--- build stamp ---"
+          "$AAPT2" dump badging "$APK" | grep -o "versionName='[^']*'" || true
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@v7

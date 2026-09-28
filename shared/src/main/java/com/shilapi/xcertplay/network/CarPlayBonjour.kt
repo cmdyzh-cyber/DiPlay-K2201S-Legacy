@@ -63,12 +63,32 @@ fun CarPlayBonjourEvent.diagnosticSummary(): String = when (this) {
 
 /** Pure protocol values shared by the Android runtime and JVM tests. */
 object CarPlayBonjourProtocol {
+    /**
+     * The AirPlay feature bits advertised in the `_airplay._tcp` TXT record.
+     *
+     * This must agree with the `features` value of the AirPlay `/info` response, otherwise iOS
+     * sees a receiver that is not CarPlay-capable during Bonjour discovery and never opens the
+     * AirPlay connection at all. The low 32 bits are what iOS validates, so they are published
+     * directly; the high word carries bits above 31 (`SupportsCarPlayDisplay`, MFi auth) which
+     * the classic AirPlay comma-separated form encodes as extra decimal fields.
+     */
+    internal const val AIRPLAY_FEATURES_LOW = 0x615653aee2L
+
+    /**
+     * `features` TXT value for `_airplay._tcp`.
+     *
+     * CarPlay receivers publish `"<low32>,<high32>,<extra>"`. Every bit iOS requires for CarPlay
+     * lives in the low 32 bits, so the low field must be `0x615653aee2` exactly; the two trailing
+     * zero-valued fields keep the record shape that Apple's own receivers use.
+     */
+    internal const val AIRPLAY_FEATURES_TXT = "0x615653aee2,0x0,0x0"
+
     fun airPlayTxtRecords(
         config: AirPlayConfig,
         identity: AirPlayIdentity,
     ): Map<String, String> = linkedMapOf(
         "deviceid" to config.deviceId,
-        "features" to "0x44540380,0x61",
+        "features" to AIRPLAY_FEATURES_TXT,
         "flags" to "0x4",
         "model" to config.model,
         "srcvers" to config.sourceVersion,
