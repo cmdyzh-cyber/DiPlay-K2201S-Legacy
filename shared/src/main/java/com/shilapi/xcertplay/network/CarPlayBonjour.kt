@@ -416,14 +416,18 @@ class CarPlayBonjour(
                         // actually bound to, so a silent bind failure shows up in the report.
                         // `interface` is a soft keyword in Kotlin, so the property must be reached
                         // through its getter — `dns.interface` does not parse.
-                        val boundInterfaceText = runCatching { dns.getInterface() }
-                            .getOrNull()?.hostAddress ?: "unavailable"
+                        val boundInterface = runCatching { dns.getInterface() }.getOrNull()
+                        val boundInterfaceText = boundInterface?.name
+                            ?: boundInterface?.hostAddress
+                            ?: "unavailable"
                         interfaceEvents.offer(CarPlayBonjourEvent.Discovery(
                             CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
                             serviceType = "$AIRPLAY_SERVICE_TYPE.local.",
                             // `detail`, not `serviceName`: serviceName is stripped from saved
                             // reports (it is usually the owner's phone name), and this fact is the
                             // most useful line when the phone never opens the AirPlay connection.
+                            // The *name* is logged rather than the address: it survives the report's
+                            // address redaction and is what proves JmDNS bound to p2p0 at all.
                             detail = "published=${familyLabel(address)} mdns-iface=$boundInterfaceText",
                         ))
                         dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
