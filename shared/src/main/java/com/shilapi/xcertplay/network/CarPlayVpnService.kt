@@ -19,6 +19,7 @@ import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
@@ -194,6 +195,18 @@ class CarPlayVpnService : VpnService() {
         try {
             while (active.get()) {
                 val socket: Socket = server.accept()
+                // The wireless bring-up probes its own port to prove the listener accepts both
+                // address families. Those connections arrive here too, and without this they would
+                // be logged as a real `airplay connection accepted from ...` and spin up a bogus
+                // session — a false positive indistinguishable from the phone finally connecting.
+                if (isLocalSource(socket.inetAddress)) {
+                    Log.i(TAG, "airplay self-test connection from ${socket.remoteSocketAddress}")
+                    attachment?.listener?.onDebugLog(
+                        "airplay self-test connection (ours, not the phone)",
+                    )
+                    runCatching { socket.close() }
+                    continue
+                }
                 Log.i(TAG, "airplay connection accepted from ${socket.remoteSocketAddress}")
                 attachment?.listener?.onDebugLog(
                     "airplay connection accepted from ${socket.remoteSocketAddress}",
@@ -233,6 +246,17 @@ class CarPlayVpnService : VpnService() {
                 attachment?.listener?.let { onTransportError(generation, it, error) }
             }
         }
+    }
+
+    /**
+     * True when [address] belongs to one of this device's own interfaces.
+     *
+     * Used to tell our own reachability probe apart from a genuine remote peer: the phone's
+     * address is not assigned locally, while the probe's source is by construction.
+     */
+    private fun isLocalSource(address: InetAddress?): Boolean {
+        if (address == null) return false
+        return runCatching { NetworkInterface.getByInetAddress(address) }.getOrNull() != null
     }
 
     private fun addSession(session: AirPlaySession) {

@@ -978,11 +978,13 @@ class CarPlayController(
                     "iface=${hotspotInfo.interfaceName ?: "unknown"} " +
                     "host=${hostAddressText} port=${wirelessAirPlayConfig.port}",
             )
-            // Run after Bonjour so the log reads in causal order, and off the main thread because
-            // each attempt can block for the connect timeout.
-            executor.execute {
-                selfTestAirPlayPort(hotspotInfo.interfaceName, wirelessAirPlayConfig.port)
-            }
+            // Run after Bonjour so the log reads in causal order. Own thread, not the shared
+            // executor: this can block for the connect timeout on each address and must never
+            // delay the bring-up work already queued there.
+            Thread(
+                { runCatching { selfTestAirPlayPort(hotspotInfo.interfaceName, wirelessAirPlayConfig.port) } },
+                "xcertplay-airplay-selftest",
+            ).apply { isDaemon = true }.start()
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
