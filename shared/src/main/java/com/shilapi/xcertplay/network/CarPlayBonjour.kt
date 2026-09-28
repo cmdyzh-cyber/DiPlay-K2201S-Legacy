@@ -290,6 +290,9 @@ class CarPlayBonjour(
     /** One JmDNS per advertised address family; all are closed together. */
     private val interfaceMdns = mutableListOf<JmDNS>()
 
+    /** What [start] registered on each JmDNS, so [reannounce] can replay it. */
+    private val interfaceRegistrations = mutableListOf<Pair<JmDNS, ServiceInfo>>()
+
     private val interfaceListener = object : ServiceListener {
         override fun serviceAdded(event: ServiceEvent) {
             if (closed) return
@@ -460,10 +463,12 @@ class CarPlayBonjour(
                             detail = "published=${familyLabel(address)} mdns-iface=$boundInterfaceText",
                         ))
                         dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
-                        dns.registerService(ServiceInfo.create(
+                        val info = ServiceInfo.create(
                             "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
                             0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
-                        ))
+                        )
+                        dns.registerService(info)
+                        interfaceRegistrations.add(dns to info)
                         Log.i(
                             TAG,
                             "mDNS published _airplay._tcp on ${address.hostAddress} " +
@@ -500,6 +505,31 @@ class CarPlayBonjour(
                 interfaceMdns.clear()
                 if (multicastLock.isHeld) multicastLock.release()
                 throw error
+            }
+        }
+    }
+
+    /**
+     * Replays the registration-time announcement.
+     *
+     * The announcement JmDNS sends on [start] goes out before ANY phone has joined the hotspot
+     * group, so it is necessarily lost — a client that joins later only learns about us if it
+     * sends a query (and if that query survives the P2P group-owner multicast path). Re-announcing
+     * the moment a client joins gives passive listeners a second chance without waiting for them
+     * to query. Unregister+register is the only public JmDNS replay path: the unregister sends a
+     * goodbye (TTL 0) on the same multicast path that is otherwise silent, so the risk window is
+     * negligible compared with the discovery failure it is trying to break.
+     */
+    fun reannounce() {
+        synchronized(lifecycleLock) {
+            if (closed || !started) return
+            for ((dns, info) in interfaceRegistrations.toList()) {
+                runCatching {
+                    dns.unregisterService(info)
+                    dns.registerService(info)
+                }.onFailure {
+                    Log.i(TAG, "mDNS re-announce failed on ${dns.name}: $it")
+                }
             }
         }
     }

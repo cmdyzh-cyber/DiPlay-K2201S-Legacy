@@ -82,7 +82,18 @@ object MdnsSniffer {
     private fun sniff(group: InetAddress, iface: NetworkInterface, log: (String) -> Unit) {
         val socket = MulticastSocket(MDNS_PORT)
         socket.reuseAddress = true
-        socket.joinGroup(InetSocketAddress(group, MDNS_PORT), iface)
+        // A failed join must be visible: "sniff started, zero packets" is ambiguous between
+        // "no traffic" and "never joined the group" otherwise.
+        runCatching { socket.joinGroup(InetSocketAddress(group, MDNS_PORT), iface) }
+            .onFailure {
+                log(
+                    "wireless mdns sniff join failed family=" +
+                        "${if (group is Inet4Address) "IPv4" else "IPv6"} " +
+                        "reason=${it.javaClass.simpleName}",
+                )
+                socket.close()
+                return
+            }
         synchronized(sockets) { sockets.add(socket) }
         val ownAddresses = java.util.Collections.list(iface.inetAddresses).toSet()
         val buffer = ByteArray(RECEIVE_BUFFER_BYTES)

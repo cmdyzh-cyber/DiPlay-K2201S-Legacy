@@ -1177,6 +1177,7 @@ class CarPlayController(
                 ) {
                     val count = manager.joinedClientCount()
                     if (count != null && count != lastReported) {
+                        val justJoined = count > 0 && lastReported == 0
                         lastReported = count
                         debugLog(
                             if (count == 0) {
@@ -1185,6 +1186,17 @@ class CarPlayController(
                                 "wireless group clients=$count；已有设备加入本机 Wi-Fi"
                             },
                         )
+                        // The registration-time Bonjour announcement went out before anyone had
+                        // joined, so it was necessarily lost. Replay it the moment the phone
+                        // shows up: passive listeners get a second chance without having to
+                        // query across the (lossy) P2P multicast path. Once per session.
+                        if (justJoined) {
+                            debugLog("wireless re-announcing Bonjour on client join")
+                            bonjour?.let { client ->
+                                runCatching { client.reannounce() }
+                                    .onFailure { debugLog("wireless re-announce failed: $it") }
+                            }
+                        }
                     }
                     // Repeat the verdict on a timer. The teardown verdict is unreliable in exactly
                     // the case that matters most: when the user gives up and force-closes, the app
