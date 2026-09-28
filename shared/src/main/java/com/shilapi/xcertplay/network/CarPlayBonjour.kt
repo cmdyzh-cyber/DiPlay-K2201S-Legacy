@@ -17,6 +17,7 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
@@ -415,9 +416,15 @@ class CarPlayBonjour(
                         // registry looks identical to a started one from the outside. Log what it
                         // actually bound to, so a silent bind failure shows up in the report.
                         // `interface` is a soft keyword in Kotlin, so the property must be reached
-                        // through its getter — `dns.interface` does not parse.
+                        // through its getter — `dns.interface` does not parse. Note the getter
+                        // returns the bound InetAddress, not a NetworkInterface, so the NIC name
+                        // has to be looked up from the address.
                         val boundInterface = runCatching { dns.getInterface() }.getOrNull()
-                        val boundInterfaceText = boundInterface?.name
+                        val boundInterfaceText = boundInterface
+                            ?.let { address ->
+                                runCatching { NetworkInterface.getByInetAddress(address) }
+                                    .getOrNull()?.name
+                            }
                             ?: boundInterface?.hostAddress
                             ?: "unavailable"
                         interfaceEvents.offer(CarPlayBonjourEvent.Discovery(
