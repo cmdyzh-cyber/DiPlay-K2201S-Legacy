@@ -100,7 +100,10 @@ object PhoneProbe {
                 for (line in lines.drop(1)) { // first line is the header
                     val columns = line.trim().split(Regex("\\s+"))
                     if (columns.size < 6) continue
-                    val (ip, _, flags, _, _, device) = columns
+                    // List destructuring only goes up to component5() — use indexes.
+                    val ip = columns[0]
+                    val flags = columns[2]
+                    val device = columns[5]
                     if (device == interfaceName && flags != "0x0") {
                         return runCatching { InetAddress.getByName(ip) }.getOrNull()
                     }
