@@ -6,6 +6,7 @@ import com.shilapi.xcertplay.airplay.AirPlayIdentity
 import com.shilapi.xcertplay.airplay.AirPlayInfoPlist
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CarPlayBonjourTest {
@@ -152,6 +153,39 @@ class CarPlayBonjourTest {
                 sourceVersion = "366.0",
                 deviceId = "02:00:00:00:00:02",
             ),
+        )
+    }
+
+    /**
+     * The bring-up verdict counts only stages that mean the phone was actually observed.
+     *
+     * `MDNS_STARTED` is our own publication and `REGISTRATION_FAILED` is a local failure; counting
+     * either made the verdict report "connect" — i.e. discovered and then refused — on runs where
+     * nothing had been discovered, which sends the next investigation to the wrong layer.
+     */
+    @Test
+    fun onlyPhoneObservationStagesCountAsDiscovery() {
+        val phoneStages = listOf(
+            CarPlayBonjourEvent.Discovery.Stage.ADDED,
+            CarPlayBonjourEvent.Discovery.Stage.RESOLVED,
+            CarPlayBonjourEvent.Discovery.Stage.REMOVED,
+            CarPlayBonjourEvent.Discovery.Stage.NO_MATCHING_ADDRESS,
+            CarPlayBonjourEvent.Discovery.Stage.INVALID_PORT,
+        )
+        val localStages = listOf(
+            CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
+            CarPlayBonjourEvent.Discovery.Stage.REGISTRATION_FAILED,
+        )
+        phoneStages.forEach { stage ->
+            assertTrue("$stage should count as phone discovery", stage.countsAsPhoneDiscovery)
+        }
+        localStages.forEach { stage ->
+            assertFalse("$stage must not count as phone discovery", stage.countsAsPhoneDiscovery)
+        }
+        // Every stage must be classified, so adding one cannot silently default to either bucket.
+        assertEquals(
+            CarPlayBonjourEvent.Discovery.Stage.values().size,
+            phoneStages.size + localStages.size,
         )
     }
 }
