@@ -38,6 +38,7 @@ import com.shilapi.xcertplay.mfi.LocalMfiAuthenticationClient
 import com.shilapi.xcertplay.network.CarPlayBonjour
 import com.shilapi.xcertplay.network.CarPlayBonjourEvent
 import com.shilapi.xcertplay.network.diagnosticSummary
+import com.shilapi.xcertplay.network.countsAsPhoneDiscovery
 import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.network.LocalOnlyHotspotManager
 import com.shilapi.xcertplay.network.ManualHotspotManager
