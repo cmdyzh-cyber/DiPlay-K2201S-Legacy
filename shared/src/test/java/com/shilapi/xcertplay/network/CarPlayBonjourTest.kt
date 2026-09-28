@@ -3,6 +3,7 @@ package com.shilapi.xcertplay.network
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
+import com.shilapi.xcertplay.airplay.AirPlayInfoPlist
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -37,7 +38,7 @@ class CarPlayBonjourTest {
         assertEquals(
             linkedMapOf(
                 "deviceid" to "02:00:00:00:00:02",
-                "features" to "0x44540380,0x61",
+                "features" to "0x5653AEE2,0x61",
                 "flags" to "0x4",
                 "model" to "LIVI",
                 "srcvers" to "366.0",
@@ -47,6 +48,32 @@ class CarPlayBonjourTest {
             ),
             CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
         )
+    }
+
+    /**
+     * iOS cross-checks the Bonjour TXT `features` against the AirPlay `/info` `features`, so the
+     * two renderings must decode back to the very same 64-bit value. This is the assertion that
+     * would have caught the wireless regression: the old TXT string only carried the low word.
+     */
+    @Test
+    fun txtFeaturesDecodeBackToTheInfoFeatures() {
+        val txt = CarPlayBonjourProtocol.airPlayTxtRecords(config, identity).getValue("features")
+        val words = txt.split(',').map { it.trim().removePrefix("0x").toLong(16) }
+        val decoded = when (words.size) {
+            1 -> words[0]
+            2 -> (words[1] shl 32) or words[0]
+            else -> error("features TXT must be 1 or 2 words, was: $txt")
+        }
+        assertEquals(AirPlayInfoPlist.CARPLAY_FEATURES, decoded)
+    }
+
+    /** Apple's `AirPlayReceiverServer.c` prints `<low32>,<high32>` and drops the high word at 0. */
+    @Test
+    fun featuresTxtFollowsApplesSplitEncoding() {
+        // 0x615653aee2 -> low 0x5653aee2, high 0x61; kAirPlayFeature_Car is bit 32.
+        assertEquals("0x5653AEE2,0x61", CarPlayBonjourProtocol.airPlayFeaturesTxt(0x615653aee2L))
+        assertEquals("0x5653AEE2", CarPlayBonjourProtocol.airPlayFeaturesTxt(0x5653aee2L))
+        assertEquals("0x0", CarPlayBonjourProtocol.airPlayFeaturesTxt(0L))
     }
 
     @Test
