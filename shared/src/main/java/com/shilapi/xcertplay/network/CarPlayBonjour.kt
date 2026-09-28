@@ -192,6 +192,15 @@ class CarPlayBonjour(
     private val advertisedHost: String? = null,
     private val useInterfaceMdns: Boolean = false,
     private val onEvent: (CarPlayBonjourEvent) -> Unit = {},
+    /**
+     * Extra addresses to publish on, beyond [advertisedHost].
+     *
+     * A JmDNS instance is bound to one address and therefore joins only that family's multicast
+     * group, so a receiver published over link-local IPv6 alone is invisible to a peer that browses
+     * over IPv4 (224.0.0.251). Wireless CarPlay never got past discovery until both families were
+     * published; the interface normally holds both a link-local IPv6 and a 192.168.49.x address.
+     */
+    advertisedHosts: List<String> = emptyList(),
 ) : Closeable {
     /**
      * Resolved lazily: the interface-mDNS path never touches the platform NSD registry, and a
@@ -212,7 +221,36 @@ class CarPlayBonjour(
     private val interfaceEvents = LinkedBlockingQueue<CarPlayBonjourEvent.Discovery>(64)
     private val seenServices = ConcurrentHashMap.newKeySet<String>()
     private val lifecycleLock = Any()
-    private val localAdvertisedAddress = advertisedHostAddress()
+
+    /**
+     * Every address this instance publishes on, primary first. One JmDNS per address is what makes
+     * the advertisement visible to a peer browsing either address family.
+     *
+     * The primary is parsed strictly because AirPlay binds to it; the extras are best-effort, so a
+     * single unusable literal cannot sink the whole wireless bring-up. Duplicates are collapsed by
+     * raw address bytes while preferring a scoped form: the same link-local IPv6 can arrive both
+     * with and without its scope, and only the scoped form can join the multicast group.
+     */
+    private val advertisedAddresses: List<InetAddress> = run {
+        val primary = advertisedHost
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let(::parseAdvertisedHost)
+        val extras = advertisedHosts.mapNotNull { value ->
+            runCatching { parseAdvertisedHost(value) }.getOrNull()
+        }
+        val byBytes = LinkedHashMap<String, InetAddress>()
+        for (address in listOfNotNull(primary) + extras) {
+            val key = address.address.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            val existing = byBytes[key]
+            val existingUnscoped = existing is Inet6Address && existing.scopeId == 0
+            if (existing == null || existingUnscoped) byBytes[key] = address
+        }
+        byBytes.values.toList()
+    }
+
+    /** Primary address: scopes resolved IPv6 peers and sources the connect probe. */
+    private val primaryAdvertisedAddress = advertisedAddresses.firstOrNull()
     private val multicastLock = (context.applicationContext ?: context)
         .getSystemService(WifiManager::class.java)
         .createMulticastLock("carplay-bonjour").apply { setReferenceCounted(false) }
@@ -226,7 +264,8 @@ class CarPlayBonjour(
     private var worker: Thread? = null
     @Volatile
     private var activeSocket: Socket? = null
-    private var interfaceMdns: JmDNS? = null
+    /** One JmDNS per advertised address family; all are closed together. */
+    private val interfaceMdns = mutableListOf<JmDNS>()
 
     private val interfaceListener = object : ServiceListener {
         override fun serviceAdded(event: ServiceEvent) {
@@ -258,9 +297,10 @@ class CarPlayBonjour(
         override fun serviceResolved(event: ServiceEvent) {
             if (closed) return
             val info = event.info
-            // Keep the HTTP probe in the same address family as its bound source.
-            val address = info.inetAddresses.firstOrNull {
-                (it is Inet4Address) == (localAdvertisedAddress is Inet4Address)
+            // Keep the HTTP probe in the same address family as a family we actually publish on;
+            // otherwise the probe would source from an interface the phone cannot answer on.
+            val address = info.inetAddresses.firstOrNull { candidate ->
+                advertisedAddresses.any { (it is Inet4Address) == (candidate is Inet4Address) }
             }?.let(::applyLocalScope)
             val stage = when {
                 address == null -> CarPlayBonjourEvent.Discovery.Stage.NO_MATCHING_ADDRESS
@@ -359,40 +399,44 @@ class CarPlayBonjour(
             try {
                 multicastLock.acquire()
                 if (useInterfaceMdns) {
-                    val address = requireNotNull(localAdvertisedAddress) {
+                    check(advertisedAddresses.isNotEmpty()) {
                         "Interface mDNS requires a local advertised address"
                     }
-                    val dns = JmDNS.create(address, "carplay-${config.deviceId.replace(":", "")}")
-                    interfaceMdns = dns
-                    // `JmDNS.create` returning does NOT prove the mDNS sockets exist: JmDNS opens
-                    // its multicast sockets lazily and swallows the failure, so a dead registry
-                    // looks identical to a started one from the outside. Log the interface it
-                    // actually bound to, so a silent bind failure shows up in the report.
-                    // Hoisted into locals: a quoted literal inside ${...} breaks Kotlin parsing.
-                    // `interface` is a soft keyword in Kotlin, so the property must be called
-                    // through its getter — `dns.interface` does not parse.
-                    val boundInterface = runCatching { dns.getInterface() }.getOrNull()
-                    val boundInterfaceText = boundInterface?.hostAddress ?: "unavailable"
                     val txtFeatures = CarPlayBonjourProtocol
                         .airPlayTxtRecords(config, identity)["features"]
-                    interfaceEvents.offer(CarPlayBonjourEvent.Discovery(
-                        CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
-                        serviceType = "$AIRPLAY_SERVICE_TYPE.local.",
-                        // `detail`, not `serviceName`: serviceName is stripped from saved reports
-                        // (it is usually the owner's phone name), and this fact is the single most
-                        // useful line when the phone never opens the AirPlay connection.
-                        detail = "mdns-iface=$boundInterfaceText",
-                    ))
-                    dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
-                    dns.registerService(ServiceInfo.create(
-                        "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
-                        0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
-                    ))
-                    Log.i(
-                        TAG,
-                        "mDNS published _airplay._tcp iface=${address.hostAddress} " +
-                            "mdnsIface=$boundInterfaceText features=$txtFeatures",
-                    )
+                    // One JmDNS per address family. A single instance joins only its own family's
+                    // multicast group, so publishing on link-local IPv6 alone leaves an IPv4
+                    // browser (224.0.0.251) unable to see us at all.
+                    for (address in advertisedAddresses) {
+                        val dns = JmDNS.create(address, "carplay-${config.deviceId.replace(":", "")}")
+                        interfaceMdns.add(dns)
+                        // `JmDNS.create` returning does NOT prove the mDNS sockets exist: JmDNS
+                        // opens its multicast sockets lazily and swallows the failure, so a dead
+                        // registry looks identical to a started one from the outside. Log what it
+                        // actually bound to, so a silent bind failure shows up in the report.
+                        // `interface` is a soft keyword in Kotlin, so the property must be reached
+                        // through its getter — `dns.interface` does not parse.
+                        val boundInterfaceText = runCatching { dns.getInterface() }
+                            .getOrNull()?.hostAddress ?: "unavailable"
+                        interfaceEvents.offer(CarPlayBonjourEvent.Discovery(
+                            CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
+                            serviceType = "$AIRPLAY_SERVICE_TYPE.local.",
+                            // `detail`, not `serviceName`: serviceName is stripped from saved
+                            // reports (it is usually the owner's phone name), and this fact is the
+                            // most useful line when the phone never opens the AirPlay connection.
+                            detail = "published=${familyLabel(address)} mdns-iface=$boundInterfaceText",
+                        ))
+                        dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
+                        dns.registerService(ServiceInfo.create(
+                            "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
+                            0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
+                        ))
+                        Log.i(
+                            TAG,
+                            "mDNS published _airplay._tcp on ${address.hostAddress} " +
+                                "boundTo=$boundInterfaceText features=$txtFeatures",
+                        )
+                    }
                 } else {
                     registerAirPlay()
                     registrationRequested = true
@@ -419,8 +463,8 @@ class CarPlayBonjour(
                 }
                 worker?.interrupt()
                 worker = null
-                runCatching { interfaceMdns?.close() }
-                interfaceMdns = null
+                interfaceMdns.toList().forEach { dns -> runCatching { dns.close() } }
+                interfaceMdns.clear()
                 if (multicastLock.isHeld) multicastLock.release()
                 throw error
             }
@@ -429,7 +473,7 @@ class CarPlayBonjour(
 
     override fun close() {
         val workerToJoin: Thread?
-        val dnsToClose: JmDNS?
+        val dnsToClose: List<JmDNS>
         synchronized(lifecycleLock) {
             if (closed) return
             closed = true
@@ -446,14 +490,14 @@ class CarPlayBonjour(
             services.clear()
             interfaceServices.clear()
             interfaceEvents.clear()
-            dnsToClose = interfaceMdns
-            interfaceMdns = null
+            dnsToClose = interfaceMdns.toList()
+            interfaceMdns.clear()
             workerToJoin = worker
             worker = null
             workerToJoin?.interrupt()
             if (multicastLock.isHeld) multicastLock.release()
         }
-        runCatching { dnsToClose?.close() }
+        dnsToClose.forEach { dns -> runCatching { dns.close() } }
         workerToJoin?.let(::joinWorker)
     }
 
@@ -466,7 +510,7 @@ class CarPlayBonjour(
             CarPlayBonjourProtocol.airPlayTxtRecords(config, identity).forEach { (key, value) ->
                 setAttribute(key, value)
             }
-            localAdvertisedAddress?.let(::setHost)
+            primaryAdvertisedAddress?.let(::setHost)
         }
         nsdManager.registerService(
             serviceInfo,
@@ -475,10 +519,12 @@ class CarPlayBonjour(
         )
     }
 
-    private fun advertisedHostAddress(): InetAddress? {
-        val value = advertisedHost?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    /** Parses one advertised address literal; invalid or unusable values fail fast at construction. */
+    private fun parseAdvertisedHost(value: String): InetAddress {
+        val trimmed = value.trim().removeSurrounding("[", "]")
+        require(trimmed.isNotEmpty()) { "advertised host must not be blank" }
         val address = try {
-            InetAddress.getByName(value.removeSurrounding("[", "]"))
+            InetAddress.getByName(trimmed)
         } catch (error: Exception) {
             throw IllegalArgumentException("Invalid advertised host: $value", error)
         }
@@ -489,6 +535,13 @@ class CarPlayBonjour(
             "advertisedHost must be link-local IPv6 or IPv4"
         }
         return address
+    }
+
+    /** Report-safe label for an address; the literal itself is redacted from saved reports. */
+    private fun familyLabel(address: InetAddress): String = when {
+        address !is Inet6Address -> "IPv4"
+        address.isLinkLocalAddress -> "IPv6-linklocal"
+        else -> "IPv6"
     }
 
     private fun runWorker() {
@@ -612,15 +665,28 @@ class CarPlayBonjour(
             ?: addresses.firstOrNull()
     }
 
+    /**
+     * Applies the link-local scope of the matching advertised IPv6 address.
+     *
+     * A link-local IPv6 without a scope cannot be routed; the scope has to come from an address we
+     * actually hold, so it is looked up among the advertised ones rather than from a single field.
+     */
     private fun applyLocalScope(address: InetAddress): InetAddress {
-        val scope = (localAdvertisedAddress as? Inet6Address)?.scopeId ?: return address
         if (address !is Inet6Address || address.scopeId != 0) return address
+        val scope = advertisedAddresses
+            .filterIsInstance<Inet6Address>()
+            .firstOrNull { it.scopeId != 0 }
+            ?.scopeId ?: return address
         return try {
             Inet6Address.getByAddress(null, address.address, scope)
         } catch (_: Exception) {
             address
         }
     }
+
+    /** The advertised address to source a connection to [target] from, matching its family. */
+    private fun sourceAddressFor(target: InetAddress): InetAddress? =
+        advertisedAddresses.firstOrNull { (it is Inet4Address) == (target is Inet4Address) }
 
     private fun probe(
         endpoint: CarPlayBonjourEndpoint,
@@ -662,7 +728,9 @@ class CarPlayBonjour(
             activeSocket = socket
         }
         try {
-            localAdvertisedAddress?.let { socket.bind(InetSocketAddress(it, 0)) }
+            // Source the probe from an address of the same family as the peer, so the phone sees
+            // the request arrive on the interface it already knows us on.
+            sourceAddressFor(address)?.let { socket.bind(InetSocketAddress(it, 0)) }
             socket.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MILLIS)
             socket.soTimeout = READ_TIMEOUT_MILLIS
             val host = address.hostAddress

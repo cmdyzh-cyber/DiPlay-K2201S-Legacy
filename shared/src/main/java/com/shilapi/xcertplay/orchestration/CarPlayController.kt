@@ -859,6 +859,13 @@ class CarPlayController(
                 )
             }
             val hostAddressText = hostAddressText(hostAddress)
+            // Every family the interface offers. This list is both what Bonjour publishes on and
+            // what the phone is told to dial, so the two can never disagree about the family.
+            val advertisedAddresses = hostAddressTexts(hotspotInfo.interfaceName, hostAddressText)
+            debugLog(
+                "wireless interface addresses iface=${hotspotInfo.interfaceName ?: "unknown"} " +
+                    "families=${advertisedAddresses.joinToString(",") { familyLabel(it) }}",
+            )
             val deviceIdentifier = hotspotInfo.bssid
                 ?.takeUnless { it.equals(ADAPTER_ADDRESS_PLACEHOLDER, ignoreCase = true) }
                 ?: airPlayConfig.deviceId
@@ -932,6 +939,12 @@ class CarPlayController(
                 config = wirelessAirPlayConfig,
                 identity = identity,
                 advertisedHost = hostAddress.hostAddress,
+                // Publish on every family the interface offers, not just the primary one. A JmDNS
+                // instance joins only its own address family's multicast group, so a receiver
+                // advertised over link-local IPv6 alone is invisible to an IPv4 browser — which is
+                // exactly how wireless CarPlay kept stalling at discovery while the phone was
+                // already joined to our group.
+                advertisedHosts = advertisedAddresses.filter { it != hostAddressText },
                 // Bind discovery and its connect probe to the same AP/address family as AirPlay.
                 // The car hotspot previously used system NSD, which could resolve another interface
                 // or IPv6 while the listener/probe was bound to the AP's IPv4 address.
@@ -988,7 +1001,7 @@ class CarPlayController(
                 passphrase = hotspotInfo.passphrase,
                 channel = hotspotInfo.channel,
                 security = hotspotInfo.security,
-                ipAddresses = hostAddressTexts(hotspotInfo.interfaceName, hostAddressText),
+                ipAddresses = advertisedAddresses,
                 airPlayPort = airPlayConfig.port,
                 deviceIdentifier = deviceIdentifier,
                 publicKey = identity.publicKeyHex,
@@ -2101,9 +2114,13 @@ class CarPlayController(
     }
 
     /**
-     * Every routable address of the hotspot interface, preferred address first. The iAP2 wireless
-     * configuration accepts a list, and the iPhone only connects over the family it actually
-     * negotiated on that network — advertising a single link-local IPv6 strands an IPv4-only peer.
+     * Every routable address of the hotspot interface, most-likely-usable first.
+     *
+     * IPv4 deliberately leads. A Wi-Fi Direct group owner normally holds 192.168.49.1, whereas the
+     * interface's other address is a *link-local* IPv6 whose scope has to be stripped for this text
+     * field — as a bare literal that is unroutable. Handing the phone the unroutable one first
+     * risks it trying that and giving up, so the routable address goes first and IPv6 stays as a
+     * fallback for a peer that negotiated IPv6.
      */
     private fun hostAddressTexts(interfaceName: String?, preferred: String): List<String> {
         val addresses = interfaceName
@@ -2111,12 +2128,19 @@ class CarPlayController(
             ?.let { nic -> Collections.list(nic.inetAddresses) }
             .orEmpty()
         val candidates = listOf(
-            addresses.filterIsInstance<Inet6Address>()
-                .firstOrNull { !it.isLoopbackAddress }?.hostAddress?.substringBefore('%'),
             addresses.filterIsInstance<Inet4Address>()
                 .firstOrNull { !it.isLoopbackAddress }?.hostAddress,
+            addresses.filterIsInstance<Inet6Address>()
+                .firstOrNull { !it.isLoopbackAddress }?.hostAddress?.substringBefore('%'),
         ).filterNotNull().filter { it.isNotBlank() }
         return (candidates + preferred).distinct()
+    }
+
+    /** Report-safe label for an address literal; the address itself is redacted from reports. */
+    private fun familyLabel(addressText: String): String = when {
+        addressText.startsWith("fe80:", ignoreCase = true) -> "IPv6-linklocal"
+        ':' in addressText -> "IPv6"
+        else -> "IPv4"
     }
 
     private fun closeBestEffort(name: String, close: () -> Unit) {
