@@ -17,6 +17,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.net.wifi.p2p.WifiP2pGroup
+import android.net.wifi.p2p.WifiP2pManager
 import android.provider.Settings
 import android.util.Log
 import com.shilapi.xcertplay.airplay.AirPlayConfig
@@ -38,6 +40,7 @@ import com.shilapi.xcertplay.network.diagnosticSummary
 import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.network.LocalOnlyHotspotManager
 import com.shilapi.xcertplay.network.ManualHotspotManager
+import com.shilapi.xcertplay.network.P2pResetRequiredException
 import com.shilapi.xcertplay.network.WifiP2pGroupManager
 import com.shilapi.xcertplay.network.WirelessHotspotInfo
 import com.shilapi.xcertplay.network.WirelessHotspotBackend
@@ -1575,6 +1578,29 @@ class CarPlayController(
         return try {
             manager.start(timeoutMillis)
         } catch (failure: Exception) {
+            // Wi-Fi Direct is a single global resource. When the phone's own "reset the connection"
+            // flow hands the group away it stays group owner with our SSID prefix but under a
+            // DIFFERENT random passphrase, so no reinstall of DiPlay can reclaim it and the iPhone
+            // keeps rejoining a group we cannot log into. Reclaim it unconditionally; a foreign
+            // group is rejected by the check inside WifiP2pGroupManager and still surfaces below.
+            val reclaimed = failure is P2pResetRequiredException &&
+                isStaleWirelessRun(generation) &&
+                reclaimWiFiDirectGroupAfter(manager)
+            if (reclaimed) {
+                debugLog("无线启动已恢复：已清除残留的 Wi-Fi Direct 分组")
+                try {
+                    return manager.start(timeoutMillis)
+                } catch (retryFailure: Exception) {
+                    if (hotspot === manager) hotspot = null
+                    closeBestEffort(hotspotMode.name) { manager.close() }
+                    if (isStaleWirelessRun(generation)) throw retryFailure
+                    throw IOException(
+                        "Could not establish ${hotspotMode.name} hotspot: " +
+                            (retryFailure.message ?: retryFailure.javaClass.simpleName),
+                        retryFailure,
+                    )
+                }
+            }
             if (hotspot === manager) hotspot = null
             closeBestEffort(hotspotMode.name) { manager.close() }
             if (isStaleWirelessRun(generation)) throw failure
@@ -1584,6 +1610,106 @@ class CarPlayController(
                 failure,
             )
         }
+    }
+
+    /**
+     * Removes the Wi-Fi Direct group that [WifiP2pGroupManager] just refused to reclaim, then waits
+     * for it to actually disappear. A refused group belongs to another install, so its recorded
+     * passphrase is useless and there is nothing worth preserving -- but a group that is still
+     * running must never be removed, so the reset is skipped while the peer is connected.
+     *
+     * Returns true when the group is confirmed gone and a second `start` is worth attempting.
+     */
+    private fun reclaimWiFiDirectGroupAfter(manager: WirelessHotspotManager): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val p2p = appContext.getSystemService(WifiP2pManager::class.java) ?: return false
+        // WifiP2pManager.Channel.close() is API 27; on Android 7 the framework drops the channel
+        // when this short-lived one stops being referenced.
+        val channel = p2p.initialize(appContext, mainHandler.looper, null)
+        val lock = Object()
+        var removed = false
+        try {
+            val group = requestP2pGroupInfo(p2p, channel, lock)
+            if (group == null) {
+                debugLog("无线重置：没有需要清除的 Wi-Fi Direct 分组")
+                return true
+            }
+            debugLog("无线重置：正在清除分组 owner=${group.isGroupOwner} 客户端数=${group.clientList?.size ?: 0}")
+            if (group.clientList?.isNotEmpty() == true) {
+                debugLog("无线重置已跳过：仍有其他设备连接在该分组上")
+                return false
+            }
+            val removedLatch = java.util.concurrent.CountDownLatch(1)
+            try {
+                p2p.removeGroup(channel, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        removed = true
+                        removedLatch.countDown()
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        debugLog("无线重置：removeGroup 被拒绝 reason=$reason")
+                        removedLatch.countDown()
+                    }
+                })
+            } catch (error: Exception) {
+                debugLog("无线重置：无法发出 removeGroup", error)
+                return false
+            }
+            try {
+                removedLatch.await(P2P_RESET_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+            if (!removed) return false
+            val drainDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(P2P_RESET_DRAIN_MILLIS)
+            while (System.nanoTime() < drainDeadline) {
+                if (requestP2pGroupInfo(p2p, channel, lock) == null) {
+                    debugLog("无线重置：Wi-Fi Direct 分组已释放")
+                    return true
+                }
+                Thread.sleep(P2P_RESET_POLL_MILLIS)
+            }
+            debugLog("无线重置：Wi-Fi Direct 分组未在限期内消失")
+            return false
+        } finally {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                runCatching { channel.close() }
+            }
+        }
+    }
+
+    /** WifiP2pManager reporters are delivered on the handler passed to initialize. */
+    private fun requestP2pGroupInfo(
+        p2p: WifiP2pManager,
+        channel: WifiP2pManager.Channel,
+        lock: Object,
+    ): WifiP2pGroup? {
+        var group: WifiP2pGroup? = null
+        var answered = false
+        synchronized(lock) {
+            try {
+                p2p.requestGroupInfo(channel) {
+                    synchronized(lock) {
+                        group = it
+                        answered = true
+                        lock.notifyAll()
+                    }
+                }
+                val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(P2P_RESET_TIMEOUT_MILLIS)
+                while (!answered) {
+                    val remaining = deadline - System.nanoTime()
+                    if (remaining <= 0L) break
+                    lock.wait(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
+                }
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (error: Exception) {
+                debugLog("无线重置：requestGroupInfo 失败", error)
+            }
+        }
+        return if (answered) group else null
     }
 
     private fun isStaleWirelessRun(generation: Int): Boolean =
@@ -1922,7 +2048,7 @@ class CarPlayController(
     private fun fail(error: Throwable) {
         if (closed) return
         onStatus(CarPlayStatus.Failed(error.message ?: error.javaClass.simpleName,
-            generateSequence(error) { it.cause }.any { it is com.shilapi.xcertplay.network.P2pResetRequiredException }))
+            generateSequence(error) { it.cause }.any { it is P2pResetRequiredException }))
     }
 
     private fun debugLog(message: String) {
@@ -2008,6 +2134,11 @@ class CarPlayController(
         private const val IAP2_IPHONE_UUID = "00000000-deca-fade-deca-deafdecacafe"
         private const val HOTSPOT_START_TIMEOUT_MILLIS = 60_000L
         private const val WIFI_P2P_START_TIMEOUT_MILLIS = 20_000L
+        /** How long a stale Wi-Fi Direct group gets to acknowledge removeGroup. */
+        private const val P2P_RESET_TIMEOUT_MILLIS = 6_000L
+        /** How long the group must keep reporting as absent before it is really gone. */
+        private const val P2P_RESET_DRAIN_MILLIS = 8_000L
+        private const val P2P_RESET_POLL_MILLIS = 250L
         private const val PAIR_TIMEOUT_MILLIS = 5 * 60_000L
         private const val VPN_CONNECT_TIMEOUT_MILLIS = 10_000L
         private const val CONTROL_LOOP_TIMEOUT_MILLIS = 5 * 60_000L
