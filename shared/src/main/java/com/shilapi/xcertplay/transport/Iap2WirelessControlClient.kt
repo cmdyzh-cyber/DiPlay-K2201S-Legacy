@@ -151,7 +151,10 @@ class Iap2WirelessControlClient(
                             } else {
                                 preTransportWiFiConfigurationsSent++
                             }
-                            onProgress("iap2 tx=0x5703 accessory-wifi-configuration")
+                            onProgress(
+                                "iap2 tx=0x5703 accessory-wifi-configuration " +
+                                    wifiConfigurationSummary(endpoint),
+                            )
                         }
                     }
 
@@ -160,7 +163,10 @@ class Iap2WirelessControlClient(
                         send(carPlayStartSession(endpoint), deadlineNanos)
                         stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
                         carPlayStartSessionsSent++
-                        onProgress("iap2 tx=0x4301 carplay-start-session")
+                        onProgress(
+                            "iap2 tx=0x4301 carplay-start-session " +
+                                startSessionSummary(endpoint),
+                        )
                     }
 
                     WIRELESS_CARPLAY_UPDATE -> {
@@ -196,7 +202,8 @@ class Iap2WirelessControlClient(
                             wifiConfigurationsSent++
                             postTransportWiFiConfigurationsSent++
                             onProgress(
-                                "iap2 tx=0x5703 post-transport accessory-wifi-configuration",
+                                "iap2 tx=0x5703 post-transport accessory-wifi-configuration " +
+                                    wifiConfigurationSummary(endpoint),
                             )
                         }
                     }
@@ -281,6 +288,7 @@ class Iap2WirelessControlClient(
                 passphrase = endpoint.passphrase,
                 channel = endpoint.channel,
                 securityType = endpoint.security.wireValue,
+                bssid = endpoint.bssid,
             )
 
         /** Wireless 0x4301 reply carrying the receiver address, port and pairing identity. */
@@ -334,6 +342,26 @@ enum class Iap2WirelessSecurity(val wireValue: Int) {
     WPA3_ONLY(4),
 }
 
+/** Report-safe label for an address literal; the literal itself is never emitted. */
+private fun addressFamily(address: String): String = when {
+    address.startsWith("fe80:", ignoreCase = true) -> "IPv6-linklocal"
+    ':' in address -> "IPv6"
+    else -> "IPv4"
+}
+
+/** What the phone is told in 0x5703, without leaking the SSID or passphrase themselves. */
+private fun wifiConfigurationSummary(endpoint: Iap2WirelessCarPlayEndpoint): String =
+    "channel=${endpoint.channel} security=${endpoint.security.wireValue} " +
+        "bssid=${if (endpoint.bssid != null) "present" else "omitted"} " +
+        "ssidLength=${endpoint.ssid.length} passLength=${endpoint.passphrase.length}"
+
+/** What the phone is told in 0x4301, families only so the report stays address-free. */
+private fun startSessionSummary(endpoint: Iap2WirelessCarPlayEndpoint): String =
+    "addrs=${endpoint.ipAddresses.joinToString(",") { addressFamily(it) }} " +
+        "port=${endpoint.airPlayPort} channel=${endpoint.channel} " +
+        "security=${endpoint.security.wireValue} " +
+        "device=${if (endpoint.deviceIdentifier.isNotBlank()) "present" else "none"}"
+
 /** Wireless hotspot and AirPlay endpoint sent in 0x5703 and 0x4301. */
 class Iap2WirelessCarPlayEndpoint(
     val ssid: String,
@@ -345,6 +373,8 @@ class Iap2WirelessCarPlayEndpoint(
     val deviceIdentifier: String,
     val publicKey: String,
     val sourceVersion: String,
+    /** Accessory hotspot BSSID sent as 0x5703 parameter 0; null only if the platform has none. */
+    val bssid: ByteArray? = null,
 ) {
     val ipAddresses: List<String> = ipAddresses.toList()
 

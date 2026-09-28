@@ -1041,6 +1041,7 @@ class CarPlayController(
                 deviceIdentifier = deviceIdentifier,
                 publicKey = identity.publicKeyHex,
                 sourceVersion = airPlayConfig.sourceVersion,
+                bssid = bssidBytes(hotspotInfo.bssid),
             )
             wirelessIdentification = identification
             wirelessAirPlayEndpoint = endpoint
@@ -2181,6 +2182,19 @@ class CarPlayController(
             throw IOException("LocalOnlyHotspot host address is unavailable")
         }
         return text
+    }
+
+    /** Parses "aa:bb:cc:dd:ee:ff" into the 0x5703 BSSID bytes; null when absent or malformed. */
+    private fun bssidBytes(text: String?): ByteArray? {
+        if (text == null) return null
+        val parts = text.split(':', '-')
+        if (parts.size != 6) return null
+        val bytes = ByteArray(6)
+        for ((index, part) in parts.withIndex()) {
+            if (part.length != 2) return null
+            bytes[index] = part.toIntOrNull(16)?.toByte() ?: return null
+        }
+        return bytes
     }
 
     /**

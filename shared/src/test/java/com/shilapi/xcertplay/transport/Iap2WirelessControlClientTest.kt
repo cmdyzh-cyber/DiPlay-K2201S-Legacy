@@ -23,6 +23,18 @@ class Iap2WirelessControlClientTest {
     }
 
     @Test
+    fun accessoryWiFiConfigurationCarriesTheBssidWhenPresent() {
+        val frame = Iap2WirelessControlClient.accessoryWiFiConfiguration(
+            endpoint(bssid = byteArrayOf(0x11, 0x22, 0x33, 0x44, 0x55, 0x66)),
+        )
+
+        assertArrayEquals(
+            byteArrayOf(0x11, 0x22, 0x33, 0x44, 0x55, 0x66),
+            parameters(frame.payload).single { it.id == 0 }.payload,
+        )
+    }
+
+    @Test
     fun carPlayStartSessionMatchesLiviWirelessVector() {
         val frame = Iap2WirelessControlClient.carPlayStartSession(endpoint())
 
@@ -105,17 +117,19 @@ class Iap2WirelessControlClientTest {
         assertTrue(0x4300 in u16Values(parameters.single { it.id == 7 }.payload))
     }
 
-    private fun endpoint(): Iap2WirelessCarPlayEndpoint = Iap2WirelessCarPlayEndpoint(
-        ssid = "LIVI",
-        passphrase = "secret123",
-        channel = 36,
-        security = Iap2WirelessSecurity.WPA3_TRANSITION,
-        ipAddresses = listOf("192.168.2.1"),
-        airPlayPort = 49152,
-        deviceIdentifier = "dev-1",
-        publicKey = "aabbcc",
-        sourceVersion = "1.0",
-    )
+    private fun endpoint(bssid: ByteArray? = null): Iap2WirelessCarPlayEndpoint =
+        Iap2WirelessCarPlayEndpoint(
+            ssid = "LIVI",
+            passphrase = "secret123",
+            channel = 36,
+            security = Iap2WirelessSecurity.WPA3_TRANSITION,
+            ipAddresses = listOf("192.168.2.1"),
+            airPlayPort = 49152,
+            deviceIdentifier = "dev-1",
+            publicKey = "aabbcc",
+            sourceVersion = "1.0",
+            bssid = bssid,
+        )
 
     private fun u16Values(bytes: ByteArray): List<Int> =
         List(bytes.size / 2) { index ->
