@@ -882,7 +882,7 @@ class CarPlayController(
                 ),
             )
             onStatus(CarPlayStatus.WaitingForPairedIphone)
-            startWirelessClientWatch(generation, hotspot)
+            hotspot?.let { startWirelessClientWatch(generation, it) }
 
             val adapter = bluetoothAdapter
                 ?: throw IOException("Bluetooth adapter is unavailable")

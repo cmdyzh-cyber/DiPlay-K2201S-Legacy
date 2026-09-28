@@ -535,13 +535,13 @@ class WifiP2pGroupManager(
      * and the saved diagnostics must stay free of them.
      */
     override fun joinedClientCount(): Int? {
-        val channel = synchronized(stateLock) {
-            if (closed || !created) null else activeChannel
+        val activeChannel = synchronized(stateLock) {
+            if (closed || !created) null else channel
         } ?: return null
         val result = AtomicReference<Int?>()
         val latch = CountDownLatch(1)
         try {
-            p2pManager.requestGroupInfo(channel) { group ->
+            p2pManager.requestGroupInfo(activeChannel) { group ->
                 result.set(group?.clientList?.size ?: 0)
                 latch.countDown()
             }
