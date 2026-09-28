@@ -77,6 +77,28 @@ sealed interface CarPlayBonjourEvent {
 }
 
 /**
+ * True when this stage means we observed the phone's *own* service.
+ *
+ * `MDNS_STARTED` is our own publication and `REGISTRATION_FAILED` is a local failure, so neither
+ * says anything about the phone. Counting them made the bring-up verdict report "connect"
+ * (discovered, then refused) on runs where nothing had been discovered at all — a misreading that
+ * points the investigation at the wrong layer.
+ */
+val CarPlayBonjourEvent.Discovery.Stage.countsAsPhoneDiscovery: Boolean
+    get() = when (this) {
+        CarPlayBonjourEvent.Discovery.Stage.ADDED,
+        CarPlayBonjourEvent.Discovery.Stage.RESOLVED,
+        CarPlayBonjourEvent.Discovery.Stage.REMOVED,
+        CarPlayBonjourEvent.Discovery.Stage.NO_MATCHING_ADDRESS,
+        CarPlayBonjourEvent.Discovery.Stage.INVALID_PORT,
+        -> true
+
+        CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
+        CarPlayBonjourEvent.Discovery.Stage.REGISTRATION_FAILED,
+        -> false
+    }
+
+/**
  * Saved reports need discovery outcomes without phone names, addresses, or pairing identifiers.
  *
  * The [CarPlayBonjourEvent.Discovery] summary keeps the *service type* but deliberately drops the

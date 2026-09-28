@@ -965,7 +965,13 @@ class CarPlayController(
                 // or IPv6 while the listener/probe was bound to the AP's IPv4 address.
                 useInterfaceMdns = true,
                 onEvent = { event ->
-                    if (event is CarPlayBonjourEvent.Discovery) {
+                    // Only events that mean we saw the phone. Counting our own publication
+                    // (MDNS_STARTED) made the verdict claim "connect" — discovered, then refused —
+                    // on runs where nothing had been discovered, sending the next investigation to
+                    // the wrong layer.
+                    if (event is CarPlayBonjourEvent.Discovery &&
+                        event.stage.countsAsPhoneDiscovery
+                    ) {
                         wirelessControlDiscoveryEvents.incrementAndGet()
                     }
                     debugLog("wireless bonjour: ${event.diagnosticSummary()}")
@@ -2197,8 +2203,12 @@ class CarPlayController(
             debugLog("wireless self-test skipped: iface=$interfaceName has no address")
             return
         }
+        debugLog("wireless self-test probing ${targets.size} address(es) on iface=$interfaceName")
         for (target in targets) {
             val label = if (target is Inet4Address) "IPv4" else "IPv6"
+            // Log the attempt before connecting so a family that is silently skipped (or one whose
+            // result never lands) is visible as a missing line rather than an invisible gap.
+            debugLog("wireless self-test $label port=$port connecting")
             val outcome = runCatching {
                 Socket().use { socket ->
                     socket.bind(InetSocketAddress(target, 0))

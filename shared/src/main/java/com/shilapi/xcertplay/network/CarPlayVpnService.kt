@@ -56,7 +56,8 @@ class CarPlayVpnService : VpnService() {
     private val sessionsLock = Any()
     private val sessions = mutableSetOf<AirPlaySession>()
     @Volatile private var attachment: AirPlayAttachment? = null
-    private var serverSocket: ServerSocket? = null
+    /** All bound listeners: the IPv6 wildcard plus an explicit IPv4 socket when needed. */
+    private val serverSockets = mutableListOf<ServerSocket>()
     private var bridge: Ipv6NcmBridge? = null
     private var tun: ParcelFileDescriptor? = null
     private var attachGeneration = 0
@@ -166,25 +167,55 @@ class CarPlayVpnService : VpnService() {
         generation: Int,
         replacement: AirPlayAttachment,
     ) {
-        val server = ServerSocket()
-        // Dual-stack wildcard: the iPhone reaches the accessory over whichever family its own
-        // interface negotiated. A socket bound to one link-local IPv6 address refuses IPv4.
-        val bindAddress = InetAddress.getByName("::")
-        Log.i(TAG, "airplay listener bind=$bindAddress port=${replacement.config.port} " +
+        val port = replacement.config.port
+        val servers = mutableListOf<ServerSocket>()
+
+        // The IPv6 wildcard. A socket bound to one link-local IPv6 address would refuse everything
+        // else, so this stays the primary listener for both the wired NCM link and wireless IPv6.
+        val wildcard = InetAddress.getByName("::")
+        Log.i(TAG, "airplay listener bind=$wildcard port=$port " +
             "attachment=${replacement.address.hostAddress}")
         replacement.listener.onDebugLog(
-            "airplay listener bind=$bindAddress port=${replacement.config.port} " +
+            "airplay listener bind=$wildcard port=$port " +
                 "attachment=${replacement.address.hostAddress}",
         )
-        server.bind(InetSocketAddress(bindAddress, replacement.config.port))
+        val server = ServerSocket()
+        server.bind(InetSocketAddress(wildcard, port))
+        servers.add(server)
+
+        // `::` is NOT reliably dual-stack: whether it also accepts IPv4 is governed by
+        // IPV6_V6ONLY, whose default is platform-specific. On this head unit it is set, so the
+        // phone's IPv4 connection to 192.168.49.1:7000 was refused outright while the IPv6 path
+        // worked — and the only symptom was a missing `airplay connection accepted from` line,
+        // which is indistinguishable from the phone never dialling at all. Bind IPv4 explicitly.
+        // When the wildcard *is* dual-stack this fails with "address already in use" and is simply
+        // skipped, so the behaviour degrades safely.
+        val ipv4 = runCatching {
+            ServerSocket().apply {
+                bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port))
+            }
+        }.onFailure {
+            Log.i(TAG, "airplay IPv4 listener not bound (wildcard may already cover it): ${it.message}")
+            replacement.listener.onDebugLog(
+                "airplay IPv4 listener skipped: ${it.javaClass.simpleName}",
+            )
+        }.getOrNull()
+        if (ipv4 != null) {
+            Log.i(TAG, "airplay IPv4 listener bound port=$port")
+            replacement.listener.onDebugLog("airplay IPv4 listener bound port=$port")
+            servers.add(ipv4)
+        }
+
         attachment = replacement
-        serverSocket = server
-        Thread(
-            { acceptLoop(generation, server) },
-            "airplay-accept",
-        ).apply {
-            isDaemon = true
-            start()
+        synchronized(this) { serverSockets.addAll(servers) }
+        for ((index, bound) in servers.withIndex()) {
+            Thread(
+                { acceptLoop(generation, bound) },
+                "airplay-accept-$index",
+            ).apply {
+                isDaemon = true
+                start()
+            }
         }
     }
 
@@ -309,8 +340,8 @@ class CarPlayVpnService : VpnService() {
         attachGeneration += 1
         active.set(false)
         attachment = null
-        serverSocket?.close()
-        serverSocket = null
+        serverSockets.forEach { socket -> runCatching { socket.close() } }
+        serverSockets.clear()
         closeSessionsLocked()
         bridge?.close()
         bridge = null
