@@ -19,6 +19,48 @@ class CarPlayBonjourTest {
         assertEquals("control probe attempts=3 status=none error=IOException", failed)
         assertFalse(failed.contains("Private phone"))
     }
+
+    /**
+     * A discovery summary must name the *service type* so the report can tell "the phone never
+     * published `_carplay-ctrl._tcp`" apart from "we found it and failed to resolve it", but it
+     * must never leak the instance name — that is routinely the owner's iPhone name.
+     */
+    @Test
+    fun discoveryDiagnosticsKeepTheServiceTypeButDropTheInstanceName() {
+        val summary = CarPlayBonjourEvent.Discovery(
+            stage = CarPlayBonjourEvent.Discovery.Stage.ADDED,
+            serviceType = "_carplay-ctrl._tcp.local.",
+            serviceName = "Chris's iPhone",
+        ).diagnosticSummary()
+        assertEquals("control discovery stage=ADDED type=_carplay-ctrl._tcp.local. ipv4=0 ipv6=0", summary)
+        assertFalse(summary.contains("Chris"))
+
+        // Stages that carry no type at all still render, so an older report parser cannot choke.
+        assertEquals(
+            "control discovery stage=MDNS_STARTED ipv4=0 ipv6=0",
+            CarPlayBonjourEvent.Discovery(CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED).diagnosticSummary(),
+        )
+    }
+
+    /** The two publication-failure stages are the ones that make a silent wireless failure loud. */
+    @Test
+    fun publicationFailureStagesRender() {
+        assertEquals(
+            "control discovery stage=REGISTRATION_FAILED type=_airplay._tcp ipv4=0 ipv6=0",
+            CarPlayBonjourEvent.Discovery(
+                CarPlayBonjourEvent.Discovery.Stage.REGISTRATION_FAILED,
+                serviceType = "_airplay._tcp",
+            ).diagnosticSummary(),
+        )
+        assertEquals(
+            "control discovery stage=NO_MATCHING_ADDRESS type=_carplay-ctrl._tcp.local. ipv4=0 ipv6=2",
+            CarPlayBonjourEvent.Discovery(
+                CarPlayBonjourEvent.Discovery.Stage.NO_MATCHING_ADDRESS,
+                serviceType = "_carplay-ctrl._tcp.local.",
+                ipv6Count = 2,
+            ).diagnosticSummary(),
+        )
+    }
     private val config = AirPlayConfig(
         deviceName = "xcertplay",
         deviceId = "02:00:00:00:00:02",

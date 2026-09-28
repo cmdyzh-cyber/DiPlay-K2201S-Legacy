@@ -36,6 +36,7 @@ import com.shilapi.xcertplay.mfi.MfiAuthenticationClient
 import com.shilapi.xcertplay.mfi.RemoteMfiAuthenticationClient
 import com.shilapi.xcertplay.mfi.LocalMfiAuthenticationClient
 import com.shilapi.xcertplay.network.CarPlayBonjour
+import com.shilapi.xcertplay.network.CarPlayBonjourEvent
 import com.shilapi.xcertplay.network.diagnosticSummary
 import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.network.LocalOnlyHotspotManager
@@ -60,6 +61,7 @@ import com.shilapi.xcertplay.transport.Iap2WiredControlClient
 import com.shilapi.xcertplay.transport.Iap2WiredControlTerminal
 import com.shilapi.xcertplay.transport.Iap2WirelessCarPlayEndpoint
 import com.shilapi.xcertplay.transport.Iap2WirelessControlClient
+import com.shilapi.xcertplay.transport.Iap2WirelessControlResult
 import com.shilapi.xcertplay.transport.Iap2WirelessControlTerminal
 import com.shilapi.xcertplay.transport.Iap2WirelessIdentification
 import com.shilapi.xcertplay.transport.I2cTransport
@@ -210,6 +212,14 @@ class CarPlayController(
     private val wirelessGeneration = AtomicInteger(0)
     private val wirelessConnectionProof = WirelessConnectionProof<AirPlaySession>()
 
+    /**
+     * Evidence counters for [logWirelessBringUpVerdict]. Every wireless failure boils down to
+     * "which of these three never happened", and that is impossible to tell from the log by eye
+     * because the absent lines are exactly the ones you cannot grep for in a large report.
+     */
+    private val wirelessControlDiscoveryEvents = AtomicInteger(0)
+    private val wirelessAirPlayConnections = AtomicInteger(0)
+
     private var permissionCloseable: Closeable? = null
     private var attachCloseable: Closeable? = null
     private var ch341PermissionCloseable: Closeable? = null
@@ -232,6 +242,7 @@ class CarPlayController(
         override fun onSessionActive(session: AirPlaySession) {
             if (activeSession !== session) BydNavigationOutputs.start(appContext)
             activeSession = session
+            wirelessAirPlayConnections.incrementAndGet()
             debugLog(
                 "AirPlay session active controller=${session.controllerId ?: "unknown"} " +
                     "peer=${session.host}",
@@ -762,6 +773,8 @@ class CarPlayController(
         wirelessHandoffRequested.set(false)
         wirelessTunnelReady.set(false)
         wirelessActiveReported.set(false)
+        wirelessControlDiscoveryEvents.set(0)
+        wirelessAirPlayConnections.set(0)
         onStatus(CarPlayStatus.StartingHotspot)
         val generation = wirelessGeneration.incrementAndGet()
         executor.execute {
@@ -895,11 +908,20 @@ class CarPlayController(
                 // The car hotspot previously used system NSD, which could resolve another interface
                 // or IPv6 while the listener/probe was bound to the AP's IPv4 address.
                 useInterfaceMdns = true,
-                onEvent = { event -> debugLog("wireless bonjour: ${event.diagnosticSummary()}") },
+                onEvent = { event ->
+                    if (event is CarPlayBonjourEvent.Discovery) {
+                        wirelessControlDiscoveryEvents.incrementAndGet()
+                    }
+                    debugLog("wireless bonjour: ${event.diagnosticSummary()}")
+                },
             )
             bonjour = bonjourClient
             bonjourClient.start()
-            debugLog("wireless Bonjour services started mode=interface iface=${hotspotInfo.interfaceName ?: "unknown"}")
+            debugLog(
+                "wireless Bonjour services started mode=interface " +
+                    "iface=${hotspotInfo.interfaceName ?: "unknown"} " +
+                    "host=${hostAddressText} port=${wirelessAirPlayConfig.port}",
+            )
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
@@ -977,6 +999,10 @@ class CarPlayController(
                             "tunnelReady=${wirelessTunnelReady.get()} " +
                             "wirelessActive=${wirelessActiveReported.get()}",
                     )
+                    // The single most useful line in a failed wireless report: it separates the
+                    // three failure families (discovery, listener, handshake) by declaring which
+                    // evidence never arrived, instead of leaving the reader to grep for absences.
+                    logWirelessBringUpVerdict(result)
                     if (!wirelessActiveReported.get()) {
                         val handoffInProgress = isWirelessHandoffInProgress(
                             handoffRequested = wirelessHandoffRequested.get(),
@@ -994,10 +1020,12 @@ class CarPlayController(
                         )
                     }
                 }
-                Iap2WirelessControlTerminal.TIMED_OUT ->
+                Iap2WirelessControlTerminal.TIMED_OUT -> {
+                    logWirelessBringUpVerdict(result)
                     if (!wirelessActiveReported.get()) {
                         onStatus(CarPlayStatus.ControlEnded)
                     }
+                }
             }
         } catch (error: Throwable) {
             if (closed || generation != wirelessGeneration.get()) {
@@ -1012,6 +1040,39 @@ class CarPlayController(
                 fail(error)
             }
         }
+    }
+
+    /**
+     * Declares which piece of evidence never arrived when a wireless attempt ends without a
+     * session. The three families need completely different fixes, and the failing one is always
+     * identified by an *absent* log line — the one thing a reader cannot grep for.
+     *
+     * - discovery: the phone never opened our AirPlay port, so it never learned where we are.
+     *   Check the TXT `features` and whether `_airplay._tcp` really reached the p2p interface.
+     * - connect: we reached the phone's CarPlay control port but it declined. Compare the feature
+     *   bits and protocol version it advertises against what we answer in `/info`.
+     * - carplay: control and discovery were both fine, so the failure is inside the AirPlay
+     *   handshake (`/pair-*`, `/auth-setup`, SETUP) — read those lines, not the discovery ones.
+     */
+    private fun logWirelessBringUpVerdict(result: Iap2WirelessControlResult) {
+        val discoveryEvents = wirelessControlDiscoveryEvents.get()
+        val airPlayConnections = wirelessAirPlayConnections.get()
+        val verdict = when {
+            airPlayConnections > 0 -> "carplay"
+            discoveryEvents > 0 -> "connect"
+            else -> "discovery"
+        }
+        val hint = when (verdict) {
+            "discovery" -> "；手机从未连上 AirPlay 端口：检查 _airplay._tcp TXT 与 p2p 接口组播"
+            "connect" -> "；已发现手机但连接被拒：比对 features 与 /info 的协议版本"
+            else -> "；发现与连接均正常：问题在 AirPlay 握手（/pair-* /auth-setup SETUP）"
+        }
+        debugLog(
+            "wireless bring-up verdict=$verdict " +
+                "discoveryEvents=$discoveryEvents airPlayConnections=$airPlayConnections " +
+                "iap2Stage=${result.stage} carPlayStartSessions=${result.carPlayStartSessionsSent}" +
+                hint,
+        )
     }
 
     private fun startWirelessTunnelControl(stream: BlockingDuplexByteStream): Boolean {
