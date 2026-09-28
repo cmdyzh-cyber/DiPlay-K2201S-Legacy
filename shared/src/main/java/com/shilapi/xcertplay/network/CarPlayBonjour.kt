@@ -44,6 +44,12 @@ sealed interface CarPlayBonjourEvent {
         val serviceName: String? = null,
         val ipv4Count: Int = 0,
         val ipv6Count: Int = 0,
+        /**
+         * A short, non-identifying fact that belongs in saved reports (for example which interface
+         * mDNS bound to). Unlike [serviceName] this IS rendered by [diagnosticSummary], so anything
+         * put here must stay free of phone names, addresses, and pairing identifiers.
+         */
+        val detail: String? = null,
     ) : CarPlayBonjourEvent {
         enum class Stage {
             ADDED,
@@ -76,11 +82,13 @@ sealed interface CarPlayBonjourEvent {
  * instance name: the type is what tells "the phone never published `_carplay-ctrl._tcp`" apart
  * from "the phone published it and we failed to resolve it", and the type carries no personal
  * data. The instance name is often the owner's iPhone name, so it only reaches the live log.
+ * [CarPlayBonjourEvent.Discovery.detail] is the escape hatch for report-safe facts.
  */
 fun CarPlayBonjourEvent.diagnosticSummary(): String = when (this) {
     is CarPlayBonjourEvent.Discovery -> buildString {
         append("control discovery stage=").append(stage)
         serviceType?.let { append(" type=").append(it) }
+        detail?.let { append(" ").append(it) }
         append(" ipv4=").append(ipv4Count).append(" ipv6=").append(ipv6Count)
     }
     is CarPlayBonjourEvent.Resolved ->
@@ -370,7 +378,10 @@ class CarPlayBonjour(
                     interfaceEvents.offer(CarPlayBonjourEvent.Discovery(
                         CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
                         serviceType = "$AIRPLAY_SERVICE_TYPE.local.",
-                        serviceName = "mdns-iface=$boundInterfaceText",
+                        // `detail`, not `serviceName`: serviceName is stripped from saved reports
+                        // (it is usually the owner's phone name), and this fact is the single most
+                        // useful line when the phone never opens the AirPlay connection.
+                        detail = "mdns-iface=$boundInterfaceText",
                     ))
                     dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
                     dns.registerService(ServiceInfo.create(

@@ -42,6 +42,25 @@ class CarPlayBonjourTest {
         )
     }
 
+    /**
+     * `detail` must survive into saved reports — it is where report-safe facts like the mDNS bind
+     * interface go. `serviceName` must not, because it is routinely the owner's phone name.
+     */
+    @Test
+    fun discoveryDetailReachesTheReportButTheInstanceNameDoesNot() {
+        val summary = CarPlayBonjourEvent.Discovery(
+            stage = CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
+            serviceType = "_airplay._tcp.local.",
+            serviceName = "Chris's iPhone",
+            detail = "mdns-iface=fe80::1",
+        ).diagnosticSummary()
+        assertEquals(
+            "control discovery stage=MDNS_STARTED type=_airplay._tcp.local. mdns-iface=fe80::1 ipv4=0 ipv6=0",
+            summary,
+        )
+        assertFalse(summary.contains("Chris"))
+    }
+
     /** The two publication-failure stages are the ones that make a silent wireless failure loud. */
     @Test
     fun publicationFailureStagesRender() {

@@ -187,6 +187,17 @@ class CarPlayController(
     private val availabilityPollGeneration = AtomicInteger(0)
     private var permissionPollGeneration = 0
     private var reenumerationAttempts = 0
+
+    /**
+     * True once this bring-up has driven the phone through the vendor re-enumeration request.
+     *
+     * A CarPlay USB configuration that is already present when a *new* session starts is a leftover
+     * from the previous one: its bulk endpoints stay bound to the closed connection, so the USBMUX
+     * handshake never gets a version reply and the bring-up freezes until the 60 s handshake
+     * timeout. Every observed session that reused such a configuration failed; every session that
+     * re-enumerated first succeeded. So a configuration is only trusted once this run has caused it.
+     */
+    private var reenumerationPerformed = false
     private var lastReportedStatus: CarPlayStatus? = null
     private var mfiResetLogged = false
 
@@ -195,6 +206,15 @@ class CarPlayController(
     @Volatile private var ch341Host: Ch341UsbHost? = null
     @Volatile private var mfiSession: MfiSession? = null
     @Volatile private var mux: Iap2UsbMuxHost? = null
+
+    /**
+     * The open USBMUX pipe. Tracked separately from [mux] because [Iap2UsbMuxHost.open] can block
+     * for the whole 60 s handshake: if the user closes the app mid-handshake, `mux` is still null
+     * and the connection would never be released. That leak leaves the phone's bulk endpoints bound
+     * to a dead connection, and the next bring-up then fails with "could not queue USBMUX read
+     * request" until the cable is physically re-plugged.
+     */
+    @Volatile private var wiredUsbSession: Iap2UsbSession? = null
     @Volatile private var csm: Iap2Session? = null
     @Volatile private var activeSession: AirPlaySession? = null
     @Volatile private var hotspot: WirelessHotspotManager? = null
@@ -394,6 +414,11 @@ class CarPlayController(
                     }
                     closeBestEffort("USBMUX") { mux?.close() }
                     mux = null
+                    // Release the pipe directly as well: when the app is closed mid-handshake the
+                    // host above was never constructed, so `mux` is null and only this closes the
+                    // USB connection. Leaving it open is what forces a physical re-plug.
+                    closeBestEffort("USBMUX pipe") { wiredUsbSession?.close() }
+                    wiredUsbSession = null
                     if (config.transport == CarPlayTransport.WIRED) {
                         closeBestEffort("VPN/NCM") { service?.detach() }
                     }
@@ -1255,6 +1280,7 @@ class CarPlayController(
         availabilityPollGeneration.incrementAndGet()
         phase = Phase.IPHONE
         reenumerationAttempts = 0
+        reenumerationPerformed = false
         onStatus(CarPlayStatus.DiscoveringIphone)
         checkIphoneAvailability()
     }
@@ -1309,12 +1335,23 @@ class CarPlayController(
                 permissionPollGeneration++
                 when (phase) {
                     Phase.REENUMERATION, Phase.IPHONE -> {
-                        if (IphoneCarPlayConfiguration.find(result.device) != null) {
-                            openDataPaths(result.device)
-                        } else if (reenumerationAttempts < MAXIMUM_REENUMERATION_ATTEMPTS) {
-                            beginReenumeration(result.device)
-                        } else {
-                            fail(
+                        val configured = IphoneCarPlayConfiguration.find(result.device) != null
+                        val attemptsLeft = reenumerationAttempts < MAXIMUM_REENUMERATION_ATTEMPTS
+                        when {
+                            // A leftover configuration cannot be trusted (see reenumerationPerformed),
+                            // so drive the phone through the vendor request to get a clean device.
+                            configured && !reenumerationPerformed && attemptsLeft -> {
+                                debugLog(
+                                    "wired USB already exposes a CarPlay configuration from an " +
+                                        "earlier session; re-enumerating for a clean state",
+                                )
+                                beginReenumeration(result.device)
+                            }
+                            // Re-enumeration is exhausted, or this run already produced the
+                            // configuration: use the device rather than dead-ending on a retry loop.
+                            configured -> openDataPaths(result.device)
+                            attemptsLeft -> beginReenumeration(result.device)
+                            else -> fail(
                                 IphoneUsbException.Protocol(
                                     "iPhone did not expose a complete CarPlay USB configuration",
                                 ),
@@ -1361,6 +1398,7 @@ class CarPlayController(
     private fun beginReenumeration(device: UsbDevice) {
         phase = Phase.REENUMERATION
         reenumerationAttempts += 1
+        reenumerationPerformed = true
         onStatus(CarPlayStatus.SelectingConfiguration)
         iphoneHost.requestCarPlayReenumerationAsync(device, executor) { transition ->
             when (transition) {
@@ -1405,12 +1443,22 @@ class CarPlayController(
         iphoneHost.openIap2UsbSessionAsync(device, executor) { result ->
             when (result) {
                 is IphoneUsbHost.Iap2SessionResult.Connected -> {
+                    // Publish the pipe before touching the phone: everything past this point can
+                    // block for the full USBMUX handshake timeout, and teardown has to be able to
+                    // release it even when `mux` is still unset.
+                    wiredUsbSession = result.session
                     try {
                         val ncm = openNcm(device)
                         runStack(result.session, ncm)
                     } catch (error: Throwable) {
-                        result.session.close()
                         fail(error)
+                    } finally {
+                        // Always release the pipe, including when the handshake never returned. A
+                        // connection left open keeps the phone's bulk endpoints bound to a dead
+                        // host, and the next bring-up then fails with "could not queue USBMUX read
+                        // request" until the cable is physically re-plugged.
+                        closeBestEffort("USBMUX pipe") { result.session.close() }
+                        if (wiredUsbSession === result.session) wiredUsbSession = null
                     }
                 }
                 is IphoneUsbHost.Iap2SessionResult.Failed -> fail(result.error)
@@ -1441,6 +1489,9 @@ class CarPlayController(
         var ncmOwnedLocally = true
         try {
             if (closed) return
+            // The USBMUX handshake waits up to 60 s for the phone's version reply, so without this
+            // marker a stale-endpoint failure is indistinguishable from a frozen app in the report.
+            debugLog("wired opening the USBMUX host")
             val mux = Iap2UsbMuxHost.open(usbSession)
             this.mux = mux
             debugLog("wired USBMUX host opened")
@@ -1570,6 +1621,13 @@ class CarPlayController(
                 },
             )
         } catch (error: Throwable) {
+            // One line that names the stage, so a failure deep in USB bring-up does not have to be
+            // reconstructed by diffing this log against a known-good one.
+            debugLog(
+                "wired bring-up verdict=failed stage=$phase " +
+                    "reenumerated=$reenumerationPerformed attempts=$reenumerationAttempts " +
+                    "reason=${error.message ?: error.javaClass.simpleName}",
+            )
             debugLog("wired bring-up failed", error)
             if (!ncmOwnedLocally) vpnService?.detach()
             fail(error)
