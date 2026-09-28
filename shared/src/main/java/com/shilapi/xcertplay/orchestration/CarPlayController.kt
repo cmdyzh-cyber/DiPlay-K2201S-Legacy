@@ -985,6 +985,10 @@ class CarPlayController(
                     "iface=${hotspotInfo.interfaceName ?: "unknown"} " +
                     "host=${hostAddressText} port=${wirelessAirPlayConfig.port}",
             )
+            // Passive observer for phone-side mDNS traffic: the 42 build proved both listener
+            // families accept and both families publish, so the remaining unknown is whether
+            // the phone's queries ever reach us. Runs beside JmDNS, sends nothing.
+            MdnsSniffer.start(hotspotInfo.interfaceName) { debugLog(it) }
             // Run after Bonjour so the log reads in causal order. Own thread, not the shared
             // executor: this can block for the connect timeout on each address and must never
             // delay the bring-up work already queued there.
@@ -2067,6 +2071,7 @@ class CarPlayController(
         val activeBonjour = bonjour
         bonjour = null
         if (activeBonjour != null) closeBestEffort("Bonjour") { activeBonjour.close() }
+        closeBestEffort("mdns sniff") { MdnsSniffer.stop() }
 
         val activeHotspot = hotspot
         hotspot = null
