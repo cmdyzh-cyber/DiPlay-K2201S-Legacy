@@ -198,6 +198,8 @@ class CarPlayController(
      * re-enumerated first succeeded. So a configuration is only trusted once this run has caused it.
      */
     private var reenumerationPerformed = false
+    /** Device node handed to the vendor request; a different node means a real re-enumeration. */
+    private var reenumerationSourceDeviceName: String? = null
     private var lastReportedStatus: CarPlayStatus? = null
     private var mfiResetLogged = false
 
@@ -880,6 +882,7 @@ class CarPlayController(
                 ),
             )
             onStatus(CarPlayStatus.WaitingForPairedIphone)
+            startWirelessClientWatch(generation, hotspot)
 
             val adapter = bluetoothAdapter
                 ?: throw IOException("Bluetooth adapter is unavailable")
@@ -1079,7 +1082,7 @@ class CarPlayController(
      * - carplay: control and discovery were both fine, so the failure is inside the AirPlay
      *   handshake (`/pair-*`, `/auth-setup`, SETUP) — read those lines, not the discovery ones.
      */
-    private fun logWirelessBringUpVerdict(result: Iap2WirelessControlResult) {
+    private fun logWirelessBringUpVerdict(result: Iap2WirelessControlResult?) {
         val discoveryEvents = wirelessControlDiscoveryEvents.get()
         val airPlayConnections = wirelessAirPlayConnections.get()
         val verdict = when {
@@ -1088,16 +1091,59 @@ class CarPlayController(
             else -> "discovery"
         }
         val hint = when (verdict) {
-            "discovery" -> "；手机从未连上 AirPlay 端口：检查 _airplay._tcp TXT 与 p2p 接口组播"
+            "discovery" -> "；手机从未连上 AirPlay 端口：看 group clients 判断手机有没有入网"
             "connect" -> "；已发现手机但连接被拒：比对 features 与 /info 的协议版本"
             else -> "；发现与连接均正常：问题在 AirPlay 握手（/pair-* /auth-setup SETUP）"
         }
+        val stage = result?.let {
+            "iap2Stage=${it.stage} carPlayStartSessions=${it.carPlayStartSessionsSent}"
+        } ?: "iap2Stage=unknown (会话被中途结束)"
         debugLog(
             "wireless bring-up verdict=$verdict " +
                 "discoveryEvents=$discoveryEvents airPlayConnections=$airPlayConnections " +
-                "iap2Stage=${result.stage} carPlayStartSessions=${result.carPlayStartSessionsSent}" +
-                hint,
+                stage + hint,
         )
+    }
+
+    /**
+     * Reports when a device joins or leaves the Wi-Fi Direct group.
+     *
+     * Two wireless failures look identical everywhere else in the log — "the phone never joined our
+     * Wi-Fi network" and "the phone joined but never opened the AirPlay connection" both end with no
+     * `airplay connection accepted from` line — yet they need opposite fixes. This is the only line
+     * that tells them apart, so it runs for the whole bring-up window and logs every change.
+     */
+    private fun startWirelessClientWatch(generation: Int, manager: WirelessHotspotManager) {
+        Thread(
+            {
+                var lastReported = -1
+                val deadline = System.nanoTime() +
+                    WIRELESS_CLIENT_WATCH_MILLIS * 1_000_000L
+                while (
+                    !closed &&
+                    generation == wirelessGeneration.get() &&
+                    System.nanoTime() < deadline
+                ) {
+                    val count = manager.joinedClientCount()
+                    if (count != null && count != lastReported) {
+                        lastReported = count
+                        debugLog(
+                            if (count == 0) {
+                                "wireless group clients=0；手机尚未加入本机 Wi-Fi"
+                            } else {
+                                "wireless group clients=$count；已有设备加入本机 Wi-Fi"
+                            },
+                        )
+                    }
+                    try {
+                        Thread.sleep(WIRELESS_CLIENT_WATCH_POLL_MILLIS)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                }
+            },
+            "xcertplay-wifi-clients",
+        ).apply { isDaemon = true }.start()
     }
 
     private fun startWirelessTunnelControl(stream: BlockingDuplexByteStream): Boolean {
@@ -1281,6 +1327,7 @@ class CarPlayController(
         phase = Phase.IPHONE
         reenumerationAttempts = 0
         reenumerationPerformed = false
+        reenumerationSourceDeviceName = null
         onStatus(CarPlayStatus.DiscoveringIphone)
         checkIphoneAvailability()
     }
@@ -1399,14 +1446,43 @@ class CarPlayController(
         phase = Phase.REENUMERATION
         reenumerationAttempts += 1
         reenumerationPerformed = true
+        // Remember which device node we asked the phone to leave. Only a *different* node proves
+        // the re-enumeration really happened; reusing the same node is the stale state that makes
+        // the USBMUX handshake time out.
+        reenumerationSourceDeviceName = device.deviceName
         onStatus(CarPlayStatus.SelectingConfiguration)
         iphoneHost.requestCarPlayReenumerationAsync(device, executor) { transition ->
             when (transition) {
-                IphoneUsbHost.TransitionResult.ReenumerationRequested ->
+                IphoneUsbHost.TransitionResult.ReenumerationRequested -> {
                     onStatus(CarPlayStatus.WaitingForReenumeration)
+                    // Do not depend on ACTION_USB_DEVICE_ATTACHED alone: some Android 7 builds miss
+                    // the broadcast when the phone comes back quickly, and the bring-up then sits
+                    // idle until the 120 s permission timeout with the phone already re-attached.
+                    scheduleReenumerationPoll()
+                }
                 is IphoneUsbHost.TransitionResult.Failed -> fail(transition.error)
             }
         }
+    }
+
+    /** Backstop for a missed USB attach broadcast while waiting for a new device node. */
+    private fun scheduleReenumerationPoll() {
+        val generation = availabilityPollGeneration.get()
+        mainHandler.postDelayed(
+            {
+                if (closed || phase != Phase.REENUMERATION) return@postDelayed
+                if (generation != availabilityPollGeneration.get()) return@postDelayed
+                val replacement = iphoneHost.discover()
+                    .firstOrNull { it.deviceName != reenumerationSourceDeviceName }
+                if (replacement != null) {
+                    debugLog("wired re-enumerated iPhone appeared; requesting USB access")
+                    requestIphonePermission(replacement)
+                } else {
+                    scheduleReenumerationPoll()
+                }
+            },
+            REENUMERATION_POLL_INTERVAL_MILLIS,
+        )
     }
 
     private fun onIphoneAttached(device: UsbDevice) {
@@ -1920,6 +1996,10 @@ class CarPlayController(
     }
 
     private fun closeWirelessStack(service: CarPlayVpnService? = vpnService) {
+        // Always emit the verdict, even when the user closes the app mid-attempt. The control loop
+        // only reaches its own verdict when it terminates on its own, which is exactly what does
+        // NOT happen when someone gives up and force-closes — the case where the log matters most.
+        logWirelessBringUpVerdict(null)
         wirelessConnectionProof.clear()
         media.setIapTunnelHandler(null)
         val activeTunnel = wirelessTunnelChannel
@@ -2258,11 +2338,16 @@ class CarPlayController(
         /** How long the group must keep reporting as absent before it is really gone. */
         private const val P2P_RESET_DRAIN_MILLIS = 8_000L
         private const val P2P_RESET_POLL_MILLIS = 250L
+        /** How long the wireless bring-up keeps watching for a device joining the group. */
+        private const val WIRELESS_CLIENT_WATCH_MILLIS = 120_000L
+        private const val WIRELESS_CLIENT_WATCH_POLL_MILLIS = 2_000L
         private const val PAIR_TIMEOUT_MILLIS = 5 * 60_000L
         private const val VPN_CONNECT_TIMEOUT_MILLIS = 10_000L
         private const val CONTROL_LOOP_TIMEOUT_MILLIS = 5 * 60_000L
         private const val LOCATION_CONTROL_LOOP_TIMEOUT_MILLIS = 24 * 60 * 60 * 1_000L
         private const val PERMISSION_POLL_INTERVAL_MILLIS = 500L
+        /** Backstop cadence for a missed USB attach broadcast after re-enumeration. */
+        private const val REENUMERATION_POLL_INTERVAL_MILLIS = 400L
         private const val PERMISSION_POLL_TIMEOUT_MILLIS = 120_000L
         private const val DEVICE_AVAILABILITY_POLL_INTERVAL_MILLIS = 2_000L
         private const val WIRELESS_HANDOFF_TIMEOUT_MILLIS = 45_000L

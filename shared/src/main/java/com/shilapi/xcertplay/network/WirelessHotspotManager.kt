@@ -38,6 +38,17 @@ interface WirelessHotspotManager : Closeable {
      */
     fun start(timeoutMillis: Long): WirelessHotspotInfo
 
+    /**
+     * How many devices have joined the group, or null when that cannot be determined.
+     *
+     * This separates two failures that are otherwise indistinguishable in the log: "the phone
+     * never joined our Wi-Fi network" (count stays 0 — the credentials, band or channel we sent in
+     * `0x5703` were not usable) and "the phone joined but never opened the AirPlay connection"
+     * (count >= 1 — the network is fine, so the fault is in Bonjour/AirPlay). Without this the two
+     * look identical, because in both cases `airplay connection accepted from` never appears.
+     */
+    fun joinedClientCount(): Int? = null
+
     /** The authenticated wireless session has rendered CarPlay; AP creation alone is insufficient. */
     fun onCarPlayConfirmed() {}
 }

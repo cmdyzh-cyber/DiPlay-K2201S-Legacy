@@ -530,6 +530,28 @@ class WifiP2pGroupManager(
         throw IOException("Interrupted while waiting for Wi-Fi P2P", interrupted)
     }
 
+    /**
+     * Counts the group's joined clients. Only the count is reported: the device addresses are MACs
+     * and the saved diagnostics must stay free of them.
+     */
+    override fun joinedClientCount(): Int? {
+        val channel = synchronized(stateLock) {
+            if (closed || !created) null else activeChannel
+        } ?: return null
+        val result = AtomicReference<Int?>()
+        val latch = CountDownLatch(1)
+        try {
+            p2pManager.requestGroupInfo(channel) { group ->
+                result.set(group?.clientList?.size ?: 0)
+                latch.countDown()
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Wi-Fi P2P client count request failed", error)
+            return null
+        }
+        return if (await(latch, REQUEST_POLL_NANOS)) result.get() else null
+    }
+
     private fun interfaceAddress(interfaceName: String): InetAddress? {
         val networkInterface = networkInterface(interfaceName) ?: return null
         var ipv4: InetAddress? = null
