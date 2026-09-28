@@ -43,6 +43,7 @@ import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.network.LocalOnlyHotspotManager
 import com.shilapi.xcertplay.network.ManualHotspotManager
 import com.shilapi.xcertplay.network.MdnsSniffer
+import com.shilapi.xcertplay.network.PhoneProbe
 import com.shilapi.xcertplay.network.P2pResetRequiredException
 import com.shilapi.xcertplay.network.WifiP2pGroupManager
 import com.shilapi.xcertplay.network.WirelessHotspotInfo
@@ -906,7 +907,7 @@ class CarPlayController(
                 ),
             )
             onStatus(CarPlayStatus.WaitingForPairedIphone)
-            hotspot?.let { startWirelessClientWatch(generation, it) }
+            hotspot?.let { startWirelessClientWatch(generation, it, hotspotInfo.interfaceName) }
 
             val adapter = bluetoothAdapter
                 ?: throw IOException("Bluetooth adapter is unavailable")
@@ -1162,7 +1163,11 @@ class CarPlayController(
      * `airplay connection accepted from` line — yet they need opposite fixes. This is the only line
      * that tells them apart, so it runs for the whole bring-up window and logs every change.
      */
-    private fun startWirelessClientWatch(generation: Int, manager: WirelessHotspotManager) {
+    private fun startWirelessClientWatch(
+        generation: Int,
+        manager: WirelessHotspotManager,
+        interfaceName: String?,
+    ) {
         Thread(
             {
                 var lastReported = -1
@@ -1196,6 +1201,10 @@ class CarPlayController(
                                 runCatching { client.reannounce() }
                                     .onFailure { debugLog("wireless re-announce failed: $it") }
                             }
+                            // The 45 logs left one question open: did the phone even get an IP,
+                            // and is its mDNS stack alive? Without that, "no phone traffic" is
+                            // ambiguous between DHCP failure and phone-side CarPlay policy.
+                            PhoneProbe.start(interfaceName) { debugLog(it) }
                         }
                     }
                     // Repeat the verdict on a timer. The teardown verdict is unreliable in exactly
