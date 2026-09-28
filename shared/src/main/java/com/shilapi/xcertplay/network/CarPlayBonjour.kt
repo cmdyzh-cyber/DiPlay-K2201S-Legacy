@@ -48,8 +48,12 @@ sealed interface CarPlayBonjourEvent {
         enum class Stage {
             ADDED,
             RESOLVED,
+            REMOVED,
             NO_MATCHING_ADDRESS,
             INVALID_PORT,
+
+            /** `JmDNS.create` returned; the `_airplay._tcp` publication is about to be attempted. */
+            MDNS_STARTED,
 
             /** Our own `_airplay._tcp` publication was rejected — the phone can never find us. */
             REGISTRATION_FAILED,
@@ -282,9 +286,10 @@ class CarPlayBonjour(
     }
 
     /**
-     * The AirPlay TXT record has to reach `p2p0` before the phone will open its AirPlay socket, so
-     * any failure to *publish* it is fatal to the whole bring-up and must be visible in the report.
-     * Publication happens after `useInterfaceMdns` is read, so a manual create is fine here.
+     * The AirPlay TXT record has to reach the p2p interface before the phone will open its AirPlay
+     * socket, so a failed *publication* is fatal to the whole bring-up and must be visible in the
+     * report. This listener only fires on the platform-NSD path; the interface-mDNS path catches
+     * its own failures where it registers the service.
      */
     private val registrationListener = object : NsdManager.RegistrationListener {
         override fun onServiceRegistered(serviceInfo: NsdServiceInfo) = Unit
@@ -355,11 +360,15 @@ class CarPlayBonjour(
                     // its multicast sockets lazily and swallows the failure, so a dead registry
                     // looks identical to a started one from the outside. Log the interface it
                     // actually bound to, so a silent bind failure shows up in the report.
+                    // Hoisted into locals: a quoted literal inside ${...} breaks Kotlin parsing.
                     val boundInterface = runCatching { dns.interface }.getOrNull()
+                    val boundInterfaceText = boundInterface?.hostAddress ?: "unavailable"
+                    val txtFeatures = CarPlayBonjourProtocol
+                        .airPlayTxtRecords(config, identity)["features"]
                     interfaceEvents.offer(CarPlayBonjourEvent.Discovery(
                         CarPlayBonjourEvent.Discovery.Stage.MDNS_STARTED,
                         serviceType = "$AIRPLAY_SERVICE_TYPE.local.",
-                        serviceName = "mdns-iface=${boundInterface?.hostAddress ?: "unavailable"}",
+                        serviceName = "mdns-iface=$boundInterfaceText",
                     ))
                     dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
                     dns.registerService(ServiceInfo.create(
@@ -369,8 +378,7 @@ class CarPlayBonjour(
                     Log.i(
                         TAG,
                         "mDNS published _airplay._tcp iface=${address.hostAddress} " +
-                            "mdnsIfaces=${dns.interface?.hostAddress ?: "unavailable"} " +
-                            "features=${CarPlayBonjourProtocol.airPlayTxtRecords(config, identity)["features"]}",
+                            "mdnsIface=$boundInterfaceText features=$txtFeatures",
                     )
                 } else {
                     registerAirPlay()
