@@ -408,7 +408,7 @@ class DiPlayActivity : ComponentActivity() {
             for (m in candidates) {
                 val types = m.parameterTypes
                 val args: Array<Any?> = when {
-                    types.size == 3 && types[0] == Int::class.javaPrimitiveType() ->
+                    types.size == 3 && types[0] == Int::class.java ->
                         arrayOf(0, "wlan0", true)
                     types.size == 2 -> arrayOf("wlan0", true)
                     else -> continue
