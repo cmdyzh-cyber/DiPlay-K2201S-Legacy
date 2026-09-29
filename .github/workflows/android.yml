@@ -1,7 +1,7 @@
 name: Android checks
 on:
   push:
-    branches: [main, leapmotor]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
