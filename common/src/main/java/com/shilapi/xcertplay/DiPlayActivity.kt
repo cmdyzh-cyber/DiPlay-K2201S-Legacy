@@ -360,6 +360,87 @@ class DiPlayActivity : ComponentActivity() {
         parent.addView(label("请先在车机设置中打开热点，并在此填入相同的名称、密码与信道（信道须与车机热点设置一致，填 0 无法连接）。iPhone 会加入该网络以使用 CarPlay。更改在下次连接时生效。", 14, MUTED).apply {
             setPadding(0, dp(8), 0, dp(18))
         })
+        parent.addView(button("系统修复 · 放行 AirPlay 端口（平台权限）", false) { runSystemFix() }, matchButton(0, 60))
+    }
+
+    /**
+     * The iPhone dials the accessory's link-local IPv6 :7000 (captured on the phone), but the
+     * hotspot client's inbound IPv6 never gets a reply — the drop is inside the car's kernel.
+     * A platform signature cannot mint CAP_NET_ADMIN, so this flow tries, in order:
+     *  1. exec ip6tables directly (works only if the process somehow holds the capability),
+     *  2. the signature-guarded hidden INetworkManagementService interface rules,
+     *  3. enable ADB over the network so the PC can apply the rules once with adb root.
+     * Every attempt is reported so the evidence comes back in one dialog.
+     */
+    private fun runSystemFix() {
+        val report = StringBuilder()
+        val rules = listOf(
+            arrayOf("-I", "INPUT", "-i", "wlan0", "-p", "tcp", "--dport", "7000", "-j", "ACCEPT"),
+            arrayOf("-I", "INPUT", "-i", "p2p0", "-p", "tcp", "--dport", "7000", "-j", "ACCEPT"),
+            arrayOf("-I", "INPUT", "-i", "wlan0", "-p", "icmpv6", "-j", "ACCEPT"),
+            arrayOf("-I", "INPUT", "-i", "p2p0", "-p", "icmpv6", "-j", "ACCEPT"),
+        )
+        report.append("—— 1.直接执行 ip6tables ——\n")
+        for (rule in rules) {
+            val r = runCatching {
+                val p = ProcessBuilder("ip6tables", *rule).redirectErrorStream(true).start()
+                val out = p.inputStream.bufferedReader().readText().trim()
+                p.waitFor()
+                "exit=${p.exitValue()} ${out.take(100)}"
+            }.getOrElse { "exec失败: ${it.message}" }
+            report.append("ip6tables ${rule.joinToString(" ")}\n  → $r\n")
+        }
+        report.append("—— 2.NetworkManagementService 接口规则 ——\n")
+        runCatching {
+            val binder = Class.forName("android.os.ServiceManager")
+                .getMethod("getService", String::class.java)
+                .invoke(null, "network_management") as android.os.IBinder
+            val stub = Class.forName("android.os.INetworkManagementService\$Stub")
+            val nms = stub.getMethod("asInterface", android.os.IBinder::class.java)
+                .invoke(null, binder)
+            val candidates = nms.javaClass.methods.filter {
+                it.name.contains("Firewall") && it.name.contains("Interface")
+            }
+            if (candidates.isEmpty()) report.append("未找到 InterfaceRule 方法\n")
+            for (m in candidates) {
+                report.append("发现: ${m.name}(${m.parameterTypes.joinToString { it.simpleName }})\n")
+            }
+            for (m in candidates) {
+                val types = m.parameterTypes
+                val args: Array<Any?> = when {
+                    types.size == 3 && types[0] == Int::class.javaPrimitiveType() ->
+                        arrayOf(0, "wlan0", true)
+                    types.size == 2 -> arrayOf("wlan0", true)
+                    else -> continue
+                }
+                val r = runCatching { m.invoke(nms, *args); "OK" }
+                    .getOrElse { "失败: ${it.cause?.message ?: it.message}" }
+                report.append("调用 ${m.name}(wlan0, allow) → $r\n")
+            }
+        }.onFailure { report.append("NMS 不可用: ${it.message}\n") }
+        report.append("—— 3.启用网络 ADB ——\n")
+        val adbStep = runCatching {
+            android.provider.Settings.Global.putInt(
+                contentResolver, android.provider.Settings.Global.ADB_ENABLED, 1,
+            )
+            val sp = Class.forName("android.os.SystemProperties")
+            val set = sp.getMethod("set", String::class.java, String::class.java)
+            set.invoke(null, "service.adb.tcp.port", "5555")
+            set.invoke(null, "persist.adb.tcp.port", "5555")
+            runCatching { set.invoke(null, "ctl.restart", "adbd") }
+            "已写入 ADB_ENABLED + tcp.port=5555"
+        }.getOrElse { "失败: ${it.message}" }
+        report.append("$adbStep\n")
+        val hotspotV4 = runCatching {
+            java.net.NetworkInterface.getByName("wlan0")?.inetAddresses?.toList()
+                ?.filterIsInstance<java.net.Inet4Address>()
+                ?.firstOrNull()?.hostAddress
+        }.getOrNull()
+        report.append("热点 IPv4: ${hotspotV4 ?: "未知"}\n")
+        report.append("在 PC 上（加入车机热点 Wi-Fi 后）:\n")
+        report.append("  adb connect ${hotspotV4 ?: "<热点IP>"}:5555\n")
+        report.append("  adb root && adb shell ip6tables -I INPUT -i wlan0 -p tcp --dport 7000 -j ACCEPT\n")
+        AlertDialog.Builder(this).setTitle("系统修复结果").setMessage(report.toString()).show()
     }
 
     private fun storedSsid() = AirPlayPersistence.loadManualHotspotSsid(this)
