@@ -1377,25 +1377,19 @@ class CarPlayController(
                 ) {
                     return@postDelayed
                 }
-                debugLog("wireless handoff timed out waiting for tunnel iAP2 readiness")
-                Thread(
-                    {
-                        if (
-                            closed ||
-                            phase != Phase.WIRELESS ||
-                            generation != wirelessGeneration.get() ||
-                            wirelessActiveReported.get()
-                        ) {
-                            return@Thread
-                        }
-                        closeWirelessStack()
-                        fail(IOException("Wireless CarPlay handoff timed out waiting for tunnel iAP2"))
-                    },
-                    "xcertplay-wireless-handoff-timeout",
-                ).apply {
-                    isDaemon = true
-                    start()
-                }
+                debugLog(
+                    "wireless handoff timed out waiting for tunnel iAP2 readiness; " +
+                        "keeping the Bluetooth control link and the live AirPlay session " +
+                        "(the reference implementation runs iAP2 over Bluetooth for the whole session)",
+                )
+                // LIVI (f-io/LIVI), the working reference, never migrates iAP2 off Bluetooth:
+                // the RFCOMM control link lives for the whole session. Tearing the stack down
+                // here killed sessions that were streaming fine (~60s reconnect loop, 2026-09-29
+                // log: disableBluetooth -> 45s watchdog -> closeWirelessStack -> AirPlay died).
+                // Keep the session; if the tunnel shows up later, maybeCompleteWirelessHandoff
+                // will still fire, and if the phone drops RFCOMM itself, the EOF path already
+                // keeps the Wi-Fi AirPlay tunnel alive.
+                onStatus(CarPlayStatus.WirelessActive)
             },
             WIRELESS_HANDOFF_TIMEOUT_MILLIS,
         )

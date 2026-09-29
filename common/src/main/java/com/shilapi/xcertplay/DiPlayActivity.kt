@@ -342,6 +342,16 @@ class DiPlayActivity : ComponentActivity() {
                 render()
             }
         }, matchButton(0, 60))
+        if (mode == WirelessHotspotMode.EXTERNAL_WIFI) {
+            // In external Wi-Fi mode the car is a plain STA client, so the real SSID,
+            // BSSID and channel of the joined network are all readable (connectionInfo).
+            // The manual channel field below only applies to 车机热点 mode where Android 7
+            // cannot observe the AP channel — showing it here just misleads.
+            parent.addView(label("外部 Wi-Fi 模式：SSID、密码、信道均自动读取网络真实值，无需手动填写。", 14, MUTED).apply {
+                setPadding(0, dp(4), 0, dp(18))
+            })
+            return
+        }
         parent.addView(space(12))
         // The iAP2 0x5703/0x4301 payloads carry this channel to the iPhone. Android 7 cannot
         // observe the hotspot channel through public APIs, so an unset channel means the payloads
