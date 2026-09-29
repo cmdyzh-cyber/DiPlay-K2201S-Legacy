@@ -163,7 +163,10 @@ object CarPlayBonjourProtocol {
         "model" to config.model,
         "srcvers" to config.sourceVersion,
         "protovers" to "1.1",
-        "pi" to identity.pairingId,
+        // "pi" (pairing ID) is deliberately NOT advertised: Apple's own receivers never put it in
+        // the TXT (AirPlayReceiverServer.c sets only deviceid/features/flags/model/protovers/
+        // srcvers/fv/pk). A nonstandard pi lets iOS treat the receiver as paired to a different
+        // controller and silently skip the service.
         "pk" to identity.publicKeyHex,
     )
 

@@ -105,7 +105,6 @@ class CarPlayBonjourTest {
                 "model" to "LIVI",
                 "srcvers" to "366.0",
                 "protovers" to "1.1",
-                "pi" to "pairing-1",
                 "pk" to "0123ab",
             ),
             CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
