@@ -374,6 +374,11 @@ class DiPlayActivity : ComponentActivity() {
      */
     private fun runSystemFix() {
         val report = StringBuilder()
+        // The NMS rejection "Only available to AID_SYSTEM" means the sharedUserId did not take
+        // effect (foreign platform key, or an update install that kept the old uid). Make the
+        // evidence explicit so the screenshot settles it.
+        report.append("uid=${android.os.Process.myUid()}（1000=system 生效）\n")
+        report.append("—— 1.直接执行 ip6tables ——\n")
         val rules = listOf(
             arrayOf("-I", "INPUT", "-i", "wlan0", "-p", "tcp", "--dport", "7000", "-j", "ACCEPT"),
             arrayOf("-I", "INPUT", "-i", "p2p0", "-p", "tcp", "--dport", "7000", "-j", "ACCEPT"),
