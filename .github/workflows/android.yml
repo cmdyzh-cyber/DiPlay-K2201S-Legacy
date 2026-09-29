@@ -160,10 +160,11 @@ jobs:
           set -euo pipefail
           APK=$(ls mobile/build/outputs/apk/release/*.apk | head -1)
           echo "APK: $APK"
-          TOOLS=$(ls "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$TOOLS/aapt2" dump badging "$APK" | grep -E "^package:|^minSdkVersion:|^targetSdkVersion:|^application-label:|^application: " || true
+          # Exact path: `ls` on the build-tools root lists directory contents, not the dirs.
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          "$TOOLS/aapt2" dump badging "$APK" | grep -E "^package:|^minSdkVersion:|^targetSdkVersion:|^application-label:|^application: "
           echo "--- build stamp ---"
-          "$TOOLS/aapt2" dump badging "$APK" | grep -o "versionName='[^']*'" || true
+          "$TOOLS/aapt2" dump badging "$APK" | grep -o "versionName='[^']*'"
           unzip -l "$APK" | grep -E "offline-mfi" || echo "offline-mfi assets: absent"
           echo "--- signature ---"
           "$TOOLS/apksigner" verify --print-certs "$APK" | head -8
