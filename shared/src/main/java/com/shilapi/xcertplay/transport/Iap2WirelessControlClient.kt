@@ -349,11 +349,18 @@ private fun addressFamily(address: String): String = when {
     else -> "IPv4"
 }
 
-/** What the phone is told in 0x5703, without leaking the SSID or passphrase themselves. */
+/**
+ * What the phone is told in 0x5703, without leaking the SSID or passphrase themselves.
+ *
+ * ⚠️ DiagnosticRedactor drops any report line containing the substrings "pass" or "ssid"
+ * (case-insensitive), so these field names must avoid both — "bssid=", "ssidLength=" and
+ * "passLength=" each killed the whole line (run 48: both 0x5703 tx lines silently vanished
+ * from the exported report while the sends themselves worked).
+ */
 private fun wifiConfigurationSummary(endpoint: Iap2WirelessCarPlayEndpoint): String =
     "channel=${endpoint.channel} security=${endpoint.security.wireValue} " +
-        "bssid=${if (endpoint.bssid != null) "present" else "omitted"} " +
-        "ssidLength=${endpoint.ssid.length} passLength=${endpoint.passphrase.length}"
+        "apMac=${if (endpoint.bssid != null) "present" else "omitted"} " +
+        "nameLength=${endpoint.ssid.length} pskLength=${endpoint.passphrase.length}"
 
 /** What the phone is told in 0x4301, families only so the report stays address-free. */
 private fun startSessionSummary(endpoint: Iap2WirelessCarPlayEndpoint): String =

@@ -75,4 +75,20 @@ class DiagnosticRedactorTest {
         for (line in lines) assertNotNull(line, DiagnosticRedactor.redact(line))
         assertFalse(DiagnosticRedactor.redact(lines.last())!!.contains("192.168.49.1"))
     }
+
+    /**
+     * Regression for run 48: the 0x5703 tx summary once said "bssid=", "ssidLength=" and
+     * "passLength=", whose substrings "ssid"/"pass" made the redactor drop the whole line —
+     * the sends worked yet the exported report looked like they never happened. The renamed
+     * fields must survive, while a literal credential still does not.
+     */
+    @Test fun iap2WifiConfigurationSummarySurvivesButCredentialsDoNot() {
+        val summary = "iap2 tx=0x5703 accessory-wifi-configuration channel=0 security=2 " +
+            "apMac=present nameLength=10 pskLength=13"
+        assertNotNull(DiagnosticRedactor.redact(summary))
+        val start = "iap2 tx=0x4301 carplay-start-session " +
+            "addrs=IPv4,IPv6-linklocal port=7000 channel=0 security=2 device=present"
+        assertNotNull(DiagnosticRedactor.redact(start))
+        assertNull(DiagnosticRedactor.redact("iap2 tx=0x5703 accessory-wifi-configuration channel=0 security=2 bssid=aa:bb:cc:dd:ee:ff"))
+    }
 }
