@@ -185,8 +185,10 @@ object AirPlayPersistence {
     fun loadWirelessHotspotMode(context: Context): WirelessHotspotMode {
         val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_WIRELESS_HOTSPOT_MODE, null)
+        // External Wi-Fi is the only wireless path that works on Android 7: the self-hosted
+        // hotspot/P2P modes drop the iPhone's inbound IPv6 to :7000 in the kernel. Default to it.
         val mode = WirelessHotspotMode.entries.firstOrNull { it.name == stored }
-            ?: WirelessHotspotMode.WIFI_P2P
+            ?: WirelessHotspotMode.EXTERNAL_WIFI
         return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
             mode == WirelessHotspotMode.WIFI_P2P
         ) {
