@@ -8,6 +8,7 @@ enum class WirelessHotspotBackend(val label: String) {
     WIFI_P2P("Wi-Fi P2P"),
     LOCAL_ONLY_HOTSPOT("LocalOnlyHotspot"),
     MANUAL_HOTSPOT("手动热点"),
+    EXTERNAL_WIFI("外部 Wi-Fi"),
 }
 
 /** The live Wi-Fi credentials and interface details for one wireless CarPlay hotspot. */
