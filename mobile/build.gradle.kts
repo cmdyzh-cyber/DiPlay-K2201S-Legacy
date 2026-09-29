@@ -51,6 +51,9 @@ android {
             optimization {
                 enable = false
             }
+            // The BYD HUD bridges gate on the runtime package name (5 hard checks), so the
+            // release build must keep the same ".hudtest" suffix as debug or those gates fail.
+            applicationIdSuffix = ".hudtest"
             signingConfig = signingConfigs.getByName("release")
         }
     }

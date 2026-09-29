@@ -84,3 +84,106 @@ jobs:
           name: diplay-debug-apk
           path: mobile/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
+
+  # Signed release APK published to GitHub Releases. The signing key never enters the
+  # repository: it rides in the same secrets pattern as the MFi identity (base64 →
+  # $RUNNER_TEMP) and is selected through the ANDROID_KEYSTORE_* inputs the Gradle file
+  # already documents. Missing secrets degrade this job to a clean skip.
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject credential files in public source
+        run: python3 scripts/check_public_tree.py
+      - name: Materialize runtime authentication assets
+        env:
+          IDENTITY_B64: ${{ secrets.DIPLAY_IDENTITY_PK8_B64 }}
+          CERTIFICATE_B64: ${{ secrets.DIPLAY_CERTIFICATE_P7B_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${IDENTITY_B64:-}" ] || [ -z "${CERTIFICATE_B64:-}" ]; then
+            echo "Runtime authentication secrets are unavailable; building without an identity."
+            exit 0
+          fi
+          AUTH_DIR="$RUNNER_TEMP/auth-assets"
+          mkdir -p "$AUTH_DIR/offline-mfi"
+          printf '%s' "$IDENTITY_B64" | base64 -d > "$AUTH_DIR/offline-mfi/identity.pk8"
+          printf '%s' "$CERTIFICATE_B64" | base64 -d > "$AUTH_DIR/offline-mfi/certificate.p7b"
+          chmod 600 "$AUTH_DIR/offline-mfi/"*
+          ls -l "$AUTH_DIR/offline-mfi"
+          echo "DIPLAY_AUTH_ASSETS_DIR=$AUTH_DIR" >> "$GITHUB_ENV"
+      - name: Restore the fixed release signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "Release signing secrets are unavailable; skipping the release job."
+            echo "DIPLAY_RELEASE_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          KEYSTORE="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          {
+            echo "DIPLAY_RELEASE_ENABLED=true"
+            echo "ANDROID_KEYSTORE_PATH=$KEYSTORE"
+            echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=${KEY_PASSWORD:-$STORE_PASSWORD}"
+          } >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Stamp the build number
+        run: |
+          set -euo pipefail
+          echo "DIPLAY_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "release versionName will be stamped 2.0（${GITHUB_RUN_NUMBER}）"
+      - name: Signed release APK
+        if: env.DIPLAY_RELEASE_ENABLED == 'true'
+        run: ./gradlew :mobile:assembleRelease --stacktrace
+      - name: Verify release APK manifest and signature
+        if: env.DIPLAY_RELEASE_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          APK=$(ls mobile/build/outputs/apk/release/*.apk | head -1)
+          echo "APK: $APK"
+          TOOLS=$(ls "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$TOOLS/aapt2" dump badging "$APK" | grep -E "^package:|^minSdkVersion:|^targetSdkVersion:|^application-label:|^application: " || true
+          echo "--- build stamp ---"
+          "$TOOLS/aapt2" dump badging "$APK" | grep -o "versionName='[^']*'" || true
+          unzip -l "$APK" | grep -E "offline-mfi" || echo "offline-mfi assets: absent"
+          echo "--- signature ---"
+          "$TOOLS/apksigner" verify --print-certs "$APK" | head -8
+      - name: Release APK artifact
+        if: env.DIPLAY_RELEASE_ENABLED == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: diplay-release-apk
+          path: mobile/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+      - name: Publish GitHub release
+        if: env.DIPLAY_RELEASE_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK=$(ls mobile/build/outputs/apk/release/*.apk | head -1)
+          TAG="v2.0-${GITHUB_RUN_NUMBER}"
+          NAME="DiPlay-2.0-${GITHUB_RUN_NUMBER}.apk"
+          cp "$APK" "$NAME"
+          gh release create "$TAG" "$NAME" \
+            --title "DiPlay 2.0（${GITHUB_RUN_NUMBER}）" \
+            --notes-file RELEASE_NOTES.md
