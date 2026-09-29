@@ -287,21 +287,33 @@ class DiPlayActivity : ComponentActivity() {
     // Wi-Fi Direct is the default link. The car's own hotspot is an alternative when Wi-Fi Direct is unstable.
     // The runtime config rejects manual mode without valid credentials, so it is only saved together with them.
     private fun wirelessLinkControls(parent: LinearLayout) {
-        val carHotspot = AirPlayPersistence.loadWirelessHotspotMode(this) == WirelessHotspotMode.MANUAL
-        val options = arrayOf("Wi-Fi Direct · 默认", "车机热点")
-        val control = button("无线方式 · ${options[if (carHotspot) 1 else 0]}", false) {}
+        val mode = AirPlayPersistence.loadWirelessHotspotMode(this)
+        val carHotspot = mode == WirelessHotspotMode.MANUAL || mode == WirelessHotspotMode.EXTERNAL_WIFI
+        val options = arrayOf("Wi-Fi Direct · 默认", "车机热点", "外部 Wi-Fi · 车机与手机同一网络")
+        val currentIndex = when (mode) {
+            WirelessHotspotMode.MANUAL -> 1
+            WirelessHotspotMode.EXTERNAL_WIFI -> 2
+            else -> 0
+        }
+        val control = button("无线方式 · ${options[currentIndex]}", false) {}
         control.setOnClickListener {
-            var selection = if (carHotspot) 1 else 0
+            var selection = currentIndex
             AlertDialog.Builder(this).setTitle("无线方式")
                 .setSingleChoiceItems(options, selection) { _, index -> selection = index }
                 .setPositiveButton(if (CarPlayBackgroundSession.hasSession()) "应用并重连" else "保存") { _, _ ->
+                    val target = when (selection) {
+                        0 -> WirelessHotspotMode.WIFI_P2P
+                        1 -> WirelessHotspotMode.MANUAL
+                        else -> WirelessHotspotMode.EXTERNAL_WIFI
+                    }
                     when {
-                        (selection == 1) == carHotspot -> Unit
+                        target == mode -> Unit
                         selection == 0 -> applyWirelessLink(WirelessHotspotMode.WIFI_P2P)
-                        hotspotError(storedSsid(), storedPassword()) == null -> applyWirelessLink(WirelessHotspotMode.MANUAL)
+                        hotspotError(storedSsid(), storedPassword()) == null ->
+                            applyWirelessLink(target)
                         else -> askHotspotCredentials { ssid, password ->
                             saveHotspotCredentials(ssid, password)
-                            applyWirelessLink(WirelessHotspotMode.MANUAL)
+                            applyWirelessLink(target)
                         }
                     }
                 }.setNegativeButton("取消", null).show()

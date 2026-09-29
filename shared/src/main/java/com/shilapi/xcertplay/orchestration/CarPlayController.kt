@@ -40,6 +40,7 @@ import com.shilapi.xcertplay.network.CarPlayBonjourEvent
 import com.shilapi.xcertplay.network.diagnosticSummary
 import com.shilapi.xcertplay.network.countsAsPhoneDiscovery
 import com.shilapi.xcertplay.network.CarPlayVpnService
+import com.shilapi.xcertplay.network.ExternalWifiManager
 import com.shilapi.xcertplay.network.LocalOnlyHotspotManager
 import com.shilapi.xcertplay.network.ManualHotspotManager
 import com.shilapi.xcertplay.network.MdnsSniffer
@@ -1031,18 +1032,21 @@ class CarPlayController(
             val identification = config.identification.copy(
                 wireless = Iap2WirelessIdentification(hostBluetoothMac, hotspotInfo.ssid),
             )
-            // LIVI (f-io/LIVI) advertises only the link-local IPv6 and the iPhone dials it —
-            // but on Android the hotspot client's inbound IPv6 is dropped by the kernel, so the
-            // SYNs die silently (phone-side pcap). This build flips the experiment: advertise
-            // ONLY the hotspot's IPv4 and see whether the iPhone dials it instead. The full
-            // family list stays as the fallback when no IPv4 exists.
-            val hotspotV4 = advertisedAddresses.firstOrNull { familyLabel(it) == "IPv4" }
+            // LIVI (f-io/LIVI), the working reference implementation, puts ONLY the link-local
+            // IPv6 in 0x4301's wireless ip_address list — the iPhone dials it directly on the
+            // interface it joined with (phone-side pcap: a v4-first list is never dialled, and
+            // a v4-only list is ignored too). On the external-Wi-Fi route the car is a plain
+            // station client, so this link-local dial is normal LAN traffic with no tether
+            // firewall in the way — that is the whole point of the route.
+            val linkLocalV6 = (hostAddress as? Inet6Address)
+                ?.takeIf { it.isLinkLocalAddress }
+                ?.hostAddress?.substringBefore('%')
             val endpoint = Iap2WirelessCarPlayEndpoint(
                 ssid = hotspotInfo.ssid,
                 passphrase = hotspotInfo.passphrase,
                 channel = hotspotInfo.channel,
                 security = hotspotInfo.security,
-                ipAddresses = listOfNotNull(hotspotV4).ifEmpty { advertisedAddresses },
+                ipAddresses = listOfNotNull(linkLocalV6).ifEmpty { advertisedAddresses },
                 airPlayPort = airPlayConfig.port,
                 deviceIdentifier = deviceIdentifier,
                 publicKey = identity.publicKeyHex,
@@ -1829,8 +1833,10 @@ class CarPlayController(
         // LocalOnlyHotspot only exists from API 26, so the legacy Wi-Fi Direct group — platform
         // chosen credentials and an unreported channel — is the only wireless option.
         val hotspotMode = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> config.wirelessHotspotMode
             config.wirelessHotspotMode == WirelessHotspotMode.MANUAL -> WirelessHotspotMode.MANUAL
+            config.wirelessHotspotMode == WirelessHotspotMode.EXTERNAL_WIFI ->
+                WirelessHotspotMode.EXTERNAL_WIFI
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> config.wirelessHotspotMode
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> WirelessHotspotMode.LOCAL_ONLY_HOTSPOT
             else -> WirelessHotspotMode.WIFI_P2P
         }
@@ -1842,6 +1848,12 @@ class CarPlayController(
         val manager: WirelessHotspotManager = when (hotspotMode) {
             WirelessHotspotMode.WIFI_P2P -> WifiP2pGroupManager(appContext, ::debugLog)
             WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> LocalOnlyHotspotManager(appContext)
+            WirelessHotspotMode.EXTERNAL_WIFI -> ExternalWifiManager(
+                context = appContext,
+                expectedSsid = config.manualHotspotSsid.orEmpty(),
+                passphrase = config.manualHotspotPassphrase.orEmpty(),
+                onDiagnostic = ::debugLog,
+            )
             WirelessHotspotMode.MANUAL -> ManualHotspotManager(
                 context = appContext,
                 ssid = config.manualHotspotSsid

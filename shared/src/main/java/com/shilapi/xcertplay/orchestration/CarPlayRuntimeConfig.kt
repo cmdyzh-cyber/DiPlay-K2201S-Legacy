@@ -21,6 +21,8 @@ enum class WirelessHotspotMode {
     WIFI_P2P,
     LOCAL_ONLY_HOTSPOT,
     MANUAL,
+    /** The car and the iPhone both join an external Wi-Fi network (e.g. a pocket router). */
+    EXTERNAL_WIFI,
 }
 
 enum class ManualHotspotBand {
@@ -93,10 +95,16 @@ class CarPlayRuntimeConfig(
         require(remoteMfiToken?.contains('\u0000') != true) {
             "Remote MFi token must not contain U+0000"
         }
-        if (wirelessHotspotMode == WirelessHotspotMode.MANUAL) {
+        if (wirelessHotspotMode == WirelessHotspotMode.MANUAL ||
+            wirelessHotspotMode == WirelessHotspotMode.EXTERNAL_WIFI
+        ) {
             val ssid = manualHotspotSsid
             require(!ssid.isNullOrBlank()) {
-                "manualHotspotSsid is required in manual hotspot mode"
+                if (wirelessHotspotMode == WirelessHotspotMode.MANUAL) {
+                    "manualHotspotSsid is required in manual hotspot mode"
+                } else {
+                    "manualHotspotSsid is required in external Wi-Fi mode"
+                }
             }
             require('\u0000' !in ssid) {
                 "manualHotspotSsid must not contain U+0000"
