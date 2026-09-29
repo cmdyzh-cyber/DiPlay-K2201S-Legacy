@@ -330,7 +330,34 @@ class DiPlayActivity : ComponentActivity() {
                 render()
             }
         }, matchButton(0, 60))
-        parent.addView(label("请先在车机设置中打开热点，并在此填入相同的名称与密码。iPhone 会加入该网络以使用 CarPlay。更改在下次连接时生效。", 14, MUTED).apply {
+        parent.addView(space(12))
+        // The iAP2 0x5703/0x4301 payloads carry this channel to the iPhone. Android 7 cannot
+        // observe the hotspot channel through public APIs, so an unset channel means the payloads
+        // say 0 — an invalid value the iPhone rejects. It MUST match the real hotspot channel.
+        val channel = AirPlayPersistence.loadManualHotspotChannel(this)
+        parent.addView(button(
+            "热点信道 · ${if (channel == 0) "0（未设置，无法连接）" else channel.toString()}",
+            false,
+        ) {
+            textInput("车机热点信道（须与车机热点实际信道一致，2.4G 常用 1/6/11）", channel.toString(), secret = false) { value ->
+                val parsed = value.trim().toIntOrNull()
+                if (parsed == null || parsed !in 0..196) {
+                    toast("信道必须为 0 或 1-196")
+                    return@textInput
+                }
+                AirPlayPersistence.saveManualHotspotChannel(this, parsed)
+                AirPlayPersistence.saveManualHotspotBand(
+                    this,
+                    when {
+                        parsed == 0 -> com.shilapi.xcertplay.orchestration.ManualHotspotBand.AUTO
+                        parsed <= 13 -> com.shilapi.xcertplay.orchestration.ManualHotspotBand.GHZ_2_4
+                        else -> com.shilapi.xcertplay.orchestration.ManualHotspotBand.GHZ_5
+                    },
+                )
+                render()
+            }
+        }, matchButton(0, 60))
+        parent.addView(label("请先在车机设置中打开热点，并在此填入相同的名称、密码与信道（信道须与车机热点设置一致，填 0 无法连接）。iPhone 会加入该网络以使用 CarPlay。更改在下次连接时生效。", 14, MUTED).apply {
             setPadding(0, dp(8), 0, dp(18))
         })
     }
@@ -345,8 +372,8 @@ class DiPlayActivity : ComponentActivity() {
         AirPlayPersistence.saveManualHotspotPassphrase(this, password)
         AirPlayPersistence.saveManualHotspotSecurity(this,
             com.shilapi.xcertplay.orchestration.ManualHotspotValidation.securityFor(password))
-        AirPlayPersistence.saveManualHotspotBand(this, com.shilapi.xcertplay.orchestration.ManualHotspotBand.AUTO)
-        AirPlayPersistence.saveManualHotspotChannel(this, 0)
+        // Band and channel are owned by the dedicated channel editor so a credentials-only edit
+        // never wipes the configured channel back to 0.
     }
 
     private fun askHotspotCredentials(done: (String, String) -> Unit) {
