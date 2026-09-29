@@ -2356,6 +2356,7 @@ class CarPlayHostActivity : ComponentActivity() {
         WirelessHotspotMode.WIFI_P2P -> "Wi-Fi P2P（5 GHz）"
         WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> "LocalOnlyHotspot"
         WirelessHotspotMode.MANUAL -> "手动热点"
+        WirelessHotspotMode.EXTERNAL_WIFI -> "外部 Wi-Fi"
     }
 
     private fun menuText(
