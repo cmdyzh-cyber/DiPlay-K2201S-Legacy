@@ -1031,12 +1031,20 @@ class CarPlayController(
             val identification = config.identification.copy(
                 wireless = Iap2WirelessIdentification(hostBluetoothMac, hotspotInfo.ssid),
             )
+            // LIVI (f-io/LIVI), the working reference implementation, puts ONLY the link-local
+            // IPv6 in 0x4301's wireless ip_address list — the iPhone dials it directly on the
+            // interface it joined with. An IPv4-first list gave the phone an address it never
+            // dialled (phone-side pcap: zero TCP attempts), so lead with the link-local the same
+            // way and keep the full list only as a fallback when no v6 link-local exists.
+            val linkLocalV6 = (hostAddress as? Inet6Address)
+                ?.takeIf { it.isLinkLocalAddress }
+                ?.hostAddress?.substringBefore('%')
             val endpoint = Iap2WirelessCarPlayEndpoint(
                 ssid = hotspotInfo.ssid,
                 passphrase = hotspotInfo.passphrase,
                 channel = hotspotInfo.channel,
                 security = hotspotInfo.security,
-                ipAddresses = advertisedAddresses,
+                ipAddresses = listOfNotNull(linkLocalV6).ifEmpty { advertisedAddresses },
                 airPlayPort = airPlayConfig.port,
                 deviceIdentifier = deviceIdentifier,
                 publicKey = identity.publicKeyHex,
