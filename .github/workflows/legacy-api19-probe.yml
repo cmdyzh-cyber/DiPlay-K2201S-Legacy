@@ -1,0 +1,58 @@
+name: Build K2201S API19 USB Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - legacy/api19-k2201s
+    paths:
+      - 'legacyprobe/**'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradle.properties'
+      - 'gradle/libs.versions.toml'
+      - '.github/workflows/legacy-api19-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build API19 probe
+        run: ./gradlew :legacyprobe:assembleDebug --stacktrace
+
+      - name: Verify APK metadata
+        run: |
+          set -euo pipefail
+          APK=$(ls legacyprobe/build/outputs/apk/debug/*.apk | head -1)
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt2"
+          echo "APK: $APK"
+          "$AAPT" dump badging "$APK" | grep -E "^package:|^sdkVersion:|^targetSdkVersion:|^application-label:"
+
+      - name: Upload probe APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: K2201S-API19-USB-Probe-V0.2
+          path: legacyprobe/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
